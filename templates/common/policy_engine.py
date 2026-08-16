@@ -37,6 +37,34 @@ REPO_ROOT_ENV = "GUARDRAILS_WORKSPACE_ROOT"
 POLICY_FILENAME = "policy.yaml"
 AUDIT_LOG_NAME = "audit.log"
 
+# Non-standard "ignore for agents" files various tools already look for.
+# There's no shared spec across vendors, so this is a best-effort, growing
+# list — add to it as new tools adopt the convention. We read these LIVE on
+# every evaluation (not baked into policy.yaml at install time) so editing
+# one of these files takes effect immediately without re-running the
+# installer.
+KNOWN_IGNORE_FILES = [
+    ".cursorignore",
+    ".agentsignore",
+    ".aiignore",
+    ".aiderignore",
+    ".clineignore",
+    ".windsurfignore",
+    ".continueignore",
+    ".copilotignore",
+    ".codeiumignore",
+    ".geminiignore",
+]
+
+# Guardrail's own infrastructure: an agent editing OR shell-deleting any of
+# these should always require human approval, or the guardrails become
+# trivial to disable from inside the same session that's bound by them.
+GUARDRAIL_INFRA_PATTERNS = [
+    ".agent-security/**", ".claude/settings*.json", ".claude/hooks/**",
+    ".agents/hooks.json", ".github/hooks/**", ".husky/**",
+    ".github/workflows/**",
+] + KNOWN_IGNORE_FILES
+
 
 @dataclass
 class Decision:
@@ -139,6 +167,90 @@ def _match_protected_path(resolved: Path, workspace_root: Path, patterns: list[s
     return None
 
 
+def _gitignore_line_to_fnmatch(line: str) -> Optional[str]:
+    """Best-effort conversion of one gitignore-style line to an fnmatch
+    pattern. This does NOT implement full gitignore semantics (no
+    directory-scoped negation resolution, no precedence between rules) —
+    it's intentionally conservative because this feeds a security control:
+    when in doubt, a line should make MORE things protected, never fewer.
+    """
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return None
+    if line.startswith("!"):
+        # A negation would "un-protect" a path. Honoring that would let a
+        # repo's own ignore file quietly weaken this control, so we skip
+        # negations entirely rather than implement include/exclude
+        # precedence. The file is still protected from being deleted or
+        # rewritten by the guardrail-infra self-protection check below.
+        return None
+    pattern = line
+    is_dir_only = pattern.endswith("/")
+    if is_dir_only:
+        pattern = pattern.rstrip("/")
+    anchored = pattern.startswith("/")
+    pattern = pattern.lstrip("/")
+    if not anchored and "/" not in pattern:
+        # Bare filename/glob with no slash: gitignore matches it at any
+        # depth, so do the same.
+        pattern = f"**/{pattern}"
+    if is_dir_only:
+        pattern = f"{pattern}/**"
+    return pattern
+
+
+_ignore_file_cache: dict[Path, tuple[float, list[tuple[str, str]]]] = {}
+
+
+def _load_ignore_file_patterns(workspace_root: Path) -> list[tuple[str, str]]:
+    """Returns [(fnmatch_pattern, source_filename), ...] for every known
+    agent-ignore file present at the workspace root. Cached per-process,
+    invalidated by mtime, so repeated hook invocations stay cheap."""
+    cache_key = workspace_root
+    newest_mtime = 0.0
+    present_files = []
+    for name in KNOWN_IGNORE_FILES:
+        p = workspace_root / name
+        if p.is_file():
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            present_files.append((p, name))
+            newest_mtime = max(newest_mtime, mtime)
+
+    cached = _ignore_file_cache.get(cache_key)
+    if cached and cached[0] == newest_mtime:
+        return cached[1]
+
+    results: list[tuple[str, str]] = []
+    for path, name in present_files:
+        try:
+            for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                pattern = _gitignore_line_to_fnmatch(line)
+                if pattern:
+                    results.append((pattern, name))
+        except OSError:
+            continue
+    _ignore_file_cache[cache_key] = (newest_mtime, results)
+    return results
+
+
+def _match_any_protected(
+    resolved: Path, workspace_root: Path, policy_patterns: list[str]
+) -> Optional[str]:
+    """Checks policy.yaml's protected_paths AND every known agent-ignore
+    file present in the repo, live. Returns a human-readable reason for
+    whichever matched first."""
+    matched = _match_protected_path(resolved, workspace_root, policy_patterns)
+    if matched:
+        return f"policy.yaml pattern '{matched}'"
+    for pattern, source in _load_ignore_file_patterns(workspace_root):
+        if _match_protected_path(resolved, workspace_root, [pattern]):
+            return f"'{source}' pattern '{pattern}'"
+    return None
+
+
 def _match_blocked_command(command: str, rules: list[dict]) -> Optional[dict]:
     normalized = _normalize_command(command)
     for rule in rules:
@@ -151,6 +263,60 @@ def _match_blocked_command(command: str, rules: list[dict]) -> Optional[dict]:
         except re.error:
             # A broken regex in policy.yaml must never silently allow traffic.
             continue
+    return None
+
+
+_SHELL_METACHARS = re.compile(r'[|&;()<>]')
+_QUOTED_OR_WORD = re.compile(r"""'[^']*'|"[^"]*"|\S+""")
+
+
+def _command_touches_patterns(
+    command: str, workspace_root: Path, patterns: list[str]
+) -> Optional[tuple[Path, str]]:
+    """Low-level tokenizer shared by the protected-path and guardrail-infra
+    shell scans. See _command_touches_protected_path for caveats."""
+    normalized = _normalize_command(command)
+    for clause in _SHELL_METACHARS.split(normalized):
+        for raw_token in _QUOTED_OR_WORD.findall(clause):
+            token = raw_token.strip("'\"")
+            if not token or token.startswith("-"):
+                continue
+            if "/" not in token and "." not in token and not token.startswith("~"):
+                continue
+            resolved = _resolve_path(token, workspace_root)
+            if resolved is None:
+                continue
+            matched = _match_protected_path(resolved, workspace_root, patterns)
+            if matched:
+                return resolved, matched
+    return None
+
+
+def _command_touches_protected_path(
+    command: str, workspace_root: Path, patterns: list[str]
+) -> Optional[tuple[Path, str]]:
+    """Best-effort scan: tokenize the command and check every token that
+    looks like a path against protected_paths (policy.yaml AND any known
+    agent-ignore file present in the repo), reusing the same resolution
+    logic as structured file-tool calls. This is NOT a full shell parser —
+    it exists to catch the common case (`cat .env`, `grep X .env`, a Python
+    one-liner naming the file literally), not to guarantee no evasion is
+    possible. See .agent-security/README.md for what this does and doesn't
+    cover."""
+    normalized = _normalize_command(command)
+    for clause in _SHELL_METACHARS.split(normalized):
+        for raw_token in _QUOTED_OR_WORD.findall(clause):
+            token = raw_token.strip("'\"")
+            if not token or token.startswith("-"):
+                continue
+            if "/" not in token and "." not in token and not token.startswith("~"):
+                continue
+            resolved = _resolve_path(token, workspace_root)
+            if resolved is None:
+                continue
+            matched = _match_any_protected(resolved, workspace_root, patterns)
+            if matched:
+                return resolved, matched
     return None
 
 
@@ -191,11 +357,11 @@ def evaluate(
                 )
                 _audit(decision, workspace_root)
                 return decision
-            matched = _match_protected_path(resolved, workspace_root, policy["protected_paths"])
+            matched = _match_any_protected(resolved, workspace_root, policy["protected_paths"])
             if matched:
                 decision = Decision(
                     "deny",
-                    f"Path matches protected pattern '{matched}'.",
+                    f"Path matches protected pattern from {matched}.",
                     matched_rule=matched,
                     tool_name=tool_name,
                     details={"resolved_path": str(resolved)},
@@ -220,18 +386,48 @@ def evaluate(
                 _audit(decision, workspace_root)
                 return decision
 
+            # A shell command can reach a protected file just as easily as
+            # a structured Read/Write call (`cat .env`, `grep X .env`,
+            # `python3 -c "open('.env').read()"`...). Scan command tokens
+            # for anything that resolves onto a protected_paths pattern.
+            matched_path = _command_touches_protected_path(
+                str(command), workspace_root, policy["protected_paths"]
+            )
+            if matched_path:
+                decision = Decision(
+                    "deny",
+                    f"Command references a path matching protected pattern from {matched_path[1]}.",
+                    matched_rule=matched_path[1],
+                    tool_name=tool_name,
+                    details={"command": command, "resolved_path": str(matched_path[0])},
+                )
+                _audit(decision, workspace_root)
+                return decision
+
+            # Same idea as the structured-tool self-protection check below,
+            # but for shell commands (`rm .cursorignore`, `rm -f
+            # .agent-security/policy.yaml`, ...).
+            infra_hit = _command_touches_patterns(str(command), workspace_root, GUARDRAIL_INFRA_PATTERNS)
+            if infra_hit:
+                decision = Decision(
+                    "ask",
+                    f"Command references guardrail infrastructure ('{infra_hit[1]}') and requires human approval.",
+                    matched_rule=infra_hit[1],
+                    tool_name=tool_name,
+                    details={"command": command},
+                )
+                _audit(decision, workspace_root)
+                return decision
+
     # --- Guardrail self-protection: never allow silent edits to the
-    #     policy engine or hook config without an explicit "ask".
+    #     policy engine or hook config without an explicit "ask". This also
+    #     covers the agent-ignore files themselves — otherwise an agent
+    #     could just delete/empty .cursorignore to remove its own limits.
     raw_path = tool_input.get("file_path") or tool_input.get("path")
     if raw_path:
-        protected_infra = [
-            ".agent-security/**", ".claude/settings*.json", ".claude/hooks/**",
-            ".agents/hooks.json", ".github/hooks/**", ".husky/**",
-            ".github/workflows/**",
-        ]
         resolved = _resolve_path(str(raw_path), workspace_root)
         if resolved is not None:
-            matched = _match_protected_path(resolved, workspace_root, protected_infra)
+            matched = _match_protected_path(resolved, workspace_root, GUARDRAIL_INFRA_PATTERNS)
             if matched:
                 decision = Decision(
                     "ask",

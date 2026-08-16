@@ -7,13 +7,30 @@
 # stored token) is already configured on the developer's machine, so it
 # works the same for public and private repos.
 #
-# Usage (once hosted):
-#   curl -fsSL https://github.com/odonline/ai-agents-guardrails-kit/-/raw/main/bootstrap.sh | bash
-#   curl -fsSL .../bootstrap.sh | bash -s -- --agents claude-code --stacks node
+# RECOMMENDED invocation (works reliably on every shell, including Git Bash
+# on Windows) — command substitution, not a pipe:
+#   bash -c "$(curl -fsSL https://github.com/ORG/ai-agents-guardrails-kit/-/raw/main/bootstrap.sh)"
+#   bash -c "$(curl -fsSL .../bootstrap.sh)" -- --agents claude-code --stacks node
+#
+# Also works, with a caveat (see below):
+#   curl -fsSL .../bootstrap.sh | bash
+#
+# Why command substitution is recommended over a plain pipe: with
+# `curl | bash`, stdin is the pipe carrying the SCRIPT itself, so by the
+# time this script tries to prompt interactively, stdin is already at EOF
+# — the underlying Node installer detects that and reopens /dev/tty (or
+# CONIN$ on Windows) to prompt correctly regardless, but that reopen can
+# fail in unusual environments (some containers, some CI runners) with no
+# controlling terminal at all. `bash -c "$(curl ...)"` sidesteps the issue
+# entirely because curl's output becomes a command *argument*, leaving
+# stdin attached to your real terminal the whole time.
+#
+# Non-interactively (CI, scripting) either form is fine:
+#   curl -fsSL .../bootstrap.sh | bash -s -- --agents claude-code --stacks node --yes
 #
 # Configure the source repo either by editing REPO_URL below, or by setting
 # env vars before piping:
-#   GUARDRAILS_REPO_URL=git@github.com:odonline/ai-agents-guardrails-kit.git \
+#   GUARDRAILS_REPO_URL=git@github.com:ORG/ai-agents-guardrails-kit.git \
 #     curl -fsSL .../bootstrap.sh | bash
 #
 # Security note: this is the same curl-pipe-shell pattern the policy engine

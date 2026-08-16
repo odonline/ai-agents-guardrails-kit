@@ -5,6 +5,9 @@
   "bin": {
     "install-guardrails": "./install.js"
   },
+  "scripts": {
+    "docs": "node docs.js"
+  },
   "files": [
     "install.js",
     "stacks.js",

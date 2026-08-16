@@ -173,4 +173,4 @@ ${checkSteps || "      # No stack-specific checks configured."}
 `;
 }
 
-module.exports = { buildPolicyYaml, buildPreCommit, buildPrePush, buildCiWorkflow };
+module.exports = { buildPolicyYaml, buildPreCommit, buildPrePush, buildCiWorkflow, CORE_BLOCKED_COMMANDS, CORE_PROTECTED_PATHS };

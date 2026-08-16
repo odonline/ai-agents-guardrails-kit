@@ -41,9 +41,11 @@ python3 -m pytest .agent-security/test_policy_engine.py -C /tmp/algún-proyecto-
 ## Cambiar reglas core (agnósticas al lenguaje)
 
 Editar `CORE_BLOCKED_COMMANDS` / `CORE_PROTECTED_PATHS` en `generate.js`.
-Corré los tests después:
+Corré `node docs.js` para regenerar `RULES.md` (documentación de todas las
+reglas — CI falla si te olvidás de este paso) y los tests después:
 
 ```bash
+node docs.js
 node install.js --target /tmp/test --agents claude-code --stacks node --yes
 python3 -m pytest /tmp/test/.agent-security/test_policy_engine.py -q
 ```

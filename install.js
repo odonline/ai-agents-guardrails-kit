@@ -77,6 +77,23 @@ function ask(rl, question) {
   return new Promise((resolve) => rl.question(question, resolve));
 }
 
+function getInteractiveInput() {
+  // When this script runs via `curl ... | bash`, stdin is the pipe that
+  // fed the *script itself* — by the time node starts, that pipe is
+  // already at EOF, so readline.question() never gets an answer and the
+  // process exits silently without installing anything. Reopen the
+  // controlling terminal directly so prompts work regardless of how the
+  // installer was invoked.
+  if (process.stdin.isTTY) return process.stdin;
+  const devicePath = process.platform === "win32" ? "\\\\.\\CONIN$" : "/dev/tty";
+  try {
+    const fd = fs.openSync(devicePath, "r");
+    return fs.createReadStream(null, { fd });
+  } catch (e) {
+    return null;
+  }
+}
+
 async function selectAgents(rl) {
   const keys = Object.keys(AGENTS);
   console.log("\n¿Para qué agente(s)/IDE querés instalar los guardrails?\n");
@@ -186,7 +203,23 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
   let stacks = args.stacks;
   let selected = args.agents;
   let installGitHooks = args.gitHooks;
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  const needsPrompt = stacks === null || selected === null || installGitHooks === null;
+  let rl = null;
+  if (needsPrompt) {
+    const input = getInteractiveInput();
+    if (!input) {
+      console.error(
+        "\nNo hay una terminal interactiva disponible para preguntar (esto pasa " +
+          "seguido con `curl | bash` en algunos entornos). Pasá los valores explícitamente:\n\n" +
+          "  ... | bash -s -- --stacks node --agents claude-code --git-hooks true --yes\n\n" +
+          `Stacks válidos: ${Object.keys(STACKS).join(", ")} (o "none")\n` +
+          `Agentes válidos: ${Object.keys(AGENTS).join(", ")}\n`
+      );
+      process.exit(1);
+    }
+    rl = readline.createInterface({ input, output: process.stdout });
+  }
 
   if (!stacks) stacks = await selectStacks(rl, TARGET_ROOT);
   if (!selected) selected = await selectAgents(rl);
@@ -194,7 +227,7 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
     const answer = await ask(rl, "\n¿Instalar también git hooks (Husky) + workflow de CI de referencia? [S/n]: ");
     installGitHooks = !/^n/i.test(answer.trim());
   }
-  rl.close();
+  if (rl) rl.close();
 
   const invalidStacks = (stacks || []).filter((s) => !STACKS[s]);
   if (invalidStacks.length) {

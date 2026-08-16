@@ -15,6 +15,14 @@ self-test:
   script:
     - |
       set -e
+      echo "== Verificando que RULES.md esté al día =="
+      cp RULES.md /tmp/RULES.md.before
+      node docs.js
+      diff -u /tmp/RULES.md.before RULES.md || {
+        echo "RULES.md está desactualizado respecto a generate.js/stacks.js. Corré 'node docs.js' y commiteá el resultado.";
+        exit 1;
+      }
+
       for stack in node php java-maven java-gradle python; do
         echo "== Probando stack: $stack =="
         rm -rf /tmp/fixture-$stack && mkdir -p /tmp/fixture-$stack
