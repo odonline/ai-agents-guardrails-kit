@@ -1,0 +1,24 @@
+{
+  "name": "install-guardrails",
+  "version": "1.0.0",
+  "description": "Scaffolds agent guardrails (Claude Code / VS Code+Codex / Antigravity) with defense-in-depth policy engine, auto-detecting the project's language stack.",
+  "bin": {
+    "install-guardrails": "./install.js"
+  },
+  "files": [
+    "install.js",
+    "stacks.js",
+    "generate.js",
+    "templates/**/*"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "license": "MIT",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/odonline/ai-agents-guardrails-kit.git"
+  },
+  "keywords": ["ai-agents", "guardrails", "claude-code", "security", "devsecops"]
+}

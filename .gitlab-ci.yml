@@ -1,0 +1,30 @@
+# CI del repo ai-agents-guardrails-kit (no confundir con templates/.../security.yml,
+# que es el CI que el instalador genera para los PROYECTOS que lo usan).
+# Este pipeline valida el kit en sí antes de mergear cambios a stacks.js,
+# generate.js o install.js.
+
+stages:
+  - test
+
+self-test:
+  stage: test
+  image: node:20
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq python3-pip
+    - pip install pyyaml pytest --break-system-packages -q
+  script:
+    - |
+      set -e
+      for stack in node php java-maven java-gradle python; do
+        echo "== Probando stack: $stack =="
+        rm -rf /tmp/fixture-$stack && mkdir -p /tmp/fixture-$stack
+        case $stack in
+          node) echo '{}' > /tmp/fixture-$stack/package.json ;;
+          php) echo '{}' > /tmp/fixture-$stack/composer.json ;;
+          java-maven) echo '<project></project>' > /tmp/fixture-$stack/pom.xml ;;
+          java-gradle) touch /tmp/fixture-$stack/build.gradle ;;
+          python) touch /tmp/fixture-$stack/pyproject.toml ;;
+        esac
+        node install.js --target /tmp/fixture-$stack --agents claude-code --stacks $stack --git-hooks true --yes
+        python3 -m pytest /tmp/fixture-$stack/.agent-security/test_policy_engine.py -q
+      done

@@ -1,0 +1,40 @@
+{
+  "enabled": true,
+  "security-gate": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command|write_to_file|replace_file_content|multi_replace_file_content|schedule|invoke_subagent|define_subagent|ask_permission",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .agents/scripts/pretooluse.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "write_to_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .agent-security/final_check.py --post-tool-use",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .agent-security/final_check.py",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
