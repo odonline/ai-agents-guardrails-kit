@@ -13,15 +13,15 @@ que ya hosteaste este repo en algún lado — ver
 
 ```bash
 # GitHub
-curl -fsSL https://raw.githubusercontent.com/TU-ORG/guardrails-kit/main/bootstrap.sh | bash
-npx --package=github:TU-ORG/guardrails-kit install-guardrails
+curl -fsSL https://raw.githubusercontent.com/TU-ORG/ai-agents-guardrails-kit/main/bootstrap.sh | bash
+npx --package=github:TU-ORG/ai-agents-guardrails-kit install-guardrails
 
 # GitLab (gitlab.com o self-hosted)
-curl -fsSL https://gitlab.com/TU-ORG/guardrails-kit/-/raw/main/bootstrap.sh | bash
-npx --package=git+https://gitlab.com/TU-ORG/guardrails-kit.git install-guardrails
+curl -fsSL https://gitlab.com/TU-ORG/ai-agents-guardrails-kit/-/raw/main/bootstrap.sh | bash
+npx --package=git+https://gitlab.com/TU-ORG/ai-agents-guardrails-kit.git install-guardrails
 
 # Cualquier otro host git (Bitbucket, self-hosted genérico...)
-GUARDRAILS_REPO_URL=https://tu-host.com/TU-ORG/guardrails-kit.git \
+GUARDRAILS_REPO_URL=https://tu-host.com/TU-ORG/ai-agents-guardrails-kit.git \
   curl -fsSL https://tu-host.com/.../bootstrap.sh | bash
 ```
 
@@ -43,7 +43,7 @@ después de un fork:
 |---|---|
 | `bootstrap.sh` | el default de `REPO_URL` (o simplemente decile a la gente que use `GUARDRAILS_REPO_URL=...`) |
 | `package.json` | el campo `repository.url` |
-| Este README | los ejemplos de `TU-ORG/guardrails-kit` |
+| Este README | los ejemplos de `TU-ORG/ai-agents-guardrails-kit` |
 
 Fuera de eso no hay nada acoplado a GitHub ni a GitLab: ni `install.js`, ni
 `stacks.js`, ni `generate.js`, ni los templates hacen referencia a ningún
