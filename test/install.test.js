@@ -85,6 +85,7 @@ Object.keys(STACK_MARKERS).forEach((stack) => {
     assert(exists(dir, ".agent-security/policy_engine.py"), "missing policy_engine.py");
     assert(exists(dir, ".agent-security/policy.yaml"), "missing policy.yaml");
     assert(exists(dir, ".agent-security/POST_INSTALL.md"), "missing .agent-security/POST_INSTALL.md");
+    assert(exists(dir, ".agent-security/SELF_TEST_PROMPT.md"), "missing .agent-security/SELF_TEST_PROMPT.md");
     assert(exists(dir, ".claude/settings.json"), "missing .claude/settings.json");
     assert(exists(dir, "AGENTS.md") && exists(dir, "CLAUDE.md") && exists(dir, "GEMINI.md"), "missing contract files");
   });

@@ -17,6 +17,11 @@
   en vez de una lista fija de 6 pasos sin distinguir cuáles son críticos.
 - Nuevo `.agent-security/POST_INSTALL.md`: explica cada paso del resumen
   final en detalle (qué es, por qué existe, qué pasa si se lo saltea).
+- Nuevo `.agent-security/SELF_TEST_PROMPT.md`: prompt listo para pegarle a
+  un agente para que valide él mismo, con sus herramientas reales, que
+  cada comando/ruta bloqueada efectivamente se deniega/pregunta y que el
+  trabajo legítimo no se ve afectado — en vez de confiar en que la
+  política hace lo que dice el `policy.yaml`.
 - Nueva suite `test/install.test.js` (`npm test`) que prueba el instalador
   en sí — sin dependencias externas, corre en Windows — sumada al pipeline
   del propio kit.

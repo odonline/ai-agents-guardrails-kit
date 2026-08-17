@@ -99,6 +99,18 @@ commands to add. After editing, re-run
 `pytest .agent-security/test_policy_engine.py` to make sure nothing
 regressed.
 
+## 7. Have an agent validate the guardrails itself — [optional, recommended once]
+
+Every step above tells you the files are in place; none of it proves the
+policy actually fires against a live agent session. `SELF_TEST_PROMPT.md`
+(same directory as this file) is a ready-to-paste prompt that has an agent
+attempt each blocked command and protected path with its real tools and
+report the real decision it got back — the same "don't trust, verify"
+principle `final_check.py` applies to tests, applied to the guardrails
+themselves. It's built to be safe to run even if something turns out to
+be broken (scratch directory, no real remote, no real database) — read
+its "Safety rules" section before running it.
+
 ## What none of this covers
 
 See `.agent-security/README.md` → "What this does NOT do." Short version:

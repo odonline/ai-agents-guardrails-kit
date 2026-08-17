@@ -6,7 +6,8 @@ Shared, audited policy engine used by every agent hook in this repo
 > Just installed this and unsure what to do next? See
 > [`POST_INSTALL.md`](./POST_INSTALL.md) — this file explains how the
 > engine itself works; that one walks through the installer's next-steps
-> checklist.
+> checklist. Want to *prove* the engine is actually engaged, not just
+> installed? See [`SELF_TEST_PROMPT.md`](./SELF_TEST_PROMPT.md).
 
 ```
 .agent-security/

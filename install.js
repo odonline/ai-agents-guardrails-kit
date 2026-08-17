@@ -51,6 +51,7 @@ const COMMON_FILES = [
   { src: "common/test_policy_engine.py", dest: ".agent-security/test_policy_engine.py" },
   { src: "common/README.md", dest: ".agent-security/README.md" },
   { src: "common/POST_INSTALL.md", dest: ".agent-security/POST_INSTALL.md" },
+  { src: "common/SELF_TEST_PROMPT.md", dest: ".agent-security/SELF_TEST_PROMPT.md" },
   { src: "common/AGENTS.md", dest: "AGENTS.md" },
   { src: "common/CLAUDE.md", dest: "CLAUDE.md" },
   { src: "common/GEMINI.md", dest: "GEMINI.md" },
@@ -376,6 +377,12 @@ ${ciStep}
 ¿Alguno de estos pasos no queda claro o no sabés si te aplica? Ver
 .agent-security/POST_INSTALL.md — explica cada uno en detalle: qué es, por
 qué existe, y qué pasa concretamente si te lo salteás.
+
+  7. [opcional] ¿Querés que el propio agente valide que los guardrails
+     funcionan de verdad? Pasale el contenido de
+     .agent-security/SELF_TEST_PROMPT.md en una sesión — va a intentar
+     cada comando/ruta bloqueada con sus herramientas reales y reportar
+     qué pasó, en vez de asumir que la política hace lo que dice.
 `);
 }
 
