@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- CI generado según el host git real: `detectGitHost()` lee el remote
+  `origin` y elige `.github/workflows/security.yml` (GitHub) o
+  `.gitlab-ci.yml` (GitLab, con un job Docker por stack) — antes siempre
+  se generaba el workflow de GitHub, quedando muerto en proyectos GitLab.
+  Override manual con `--ci github|gitlab|none`.
+- Git hooks que se activan solos: si el target ya es un repo git, el
+  instalador corre `git config core.hooksPath .husky` automáticamente —
+  antes los hooks quedaban escritos pero inertes hasta que alguien
+  corriera ese comando a mano (`git` no ejecuta nada de `.husky/` sin él).
+- El resumen final de "próximos pasos" ahora es dinámico: solo muestra los
+  pasos que aplican a esa instalación puntual, con etiqueta
+  `[obligatorio]`/`[recomendado]`/`[opcional]`/`[listo]` según corresponda,
+  en vez de una lista fija de 6 pasos sin distinguir cuáles son críticos.
+- Nuevo `.agent-security/POST_INSTALL.md`: explica cada paso del resumen
+  final en detalle (qué es, por qué existe, qué pasa si se lo saltea).
+- Nueva suite `test/install.test.js` (`npm test`) que prueba el instalador
+  en sí — sin dependencias externas, corre en Windows — sumada al pipeline
+  del propio kit.
+
 ## v1.0.0
 
 - Motor de políticas compartido (`policy_engine.py`): protected paths con

@@ -50,6 +50,7 @@ const COMMON_FILES = [
   { src: "common/final_check.py", dest: ".agent-security/final_check.py" },
   { src: "common/test_policy_engine.py", dest: ".agent-security/test_policy_engine.py" },
   { src: "common/README.md", dest: ".agent-security/README.md" },
+  { src: "common/POST_INSTALL.md", dest: ".agent-security/POST_INSTALL.md" },
   { src: "common/AGENTS.md", dest: "AGENTS.md" },
   { src: "common/CLAUDE.md", dest: "CLAUDE.md" },
   { src: "common/GEMINI.md", dest: "GEMINI.md" },
@@ -189,6 +190,20 @@ async function selectStacks(rl, target) {
   return idxs.filter((i) => i >= 0 && i < keys.length).map((i) => keys[i]);
 }
 
+// git never runs hooks under .husky/ on its own — it only looks in
+// .git/hooks/ unless core.hooksPath points somewhere else. Writing the
+// hook files without this leaves them as inert text files, so we set it
+// automatically whenever the target is already a git repo.
+function configureHooksPath(target) {
+  if (!fs.existsSync(path.join(target, ".git"))) return "no-git";
+  try {
+    execSync("git config core.hooksPath .husky", { cwd: target, stdio: "ignore" });
+    return "configured";
+  } catch (e) {
+    return "failed";
+  }
+}
+
 function ensureGitignore(target) {
   const gi = path.join(target, ".gitignore");
   const lines = [".agent-security/audit.log", ".agent-security/completion_reports.log", "*.new"];
@@ -297,10 +312,23 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
     AGENTS[key].files.forEach((f) => copyFile(f.src, path.join(TARGET_ROOT, f.dest)));
   }
 
+  let hooksPathStatus = null;
   if (installGitHooks) {
     console.log("\nGit hooks (generados según el/los stack(s)):");
     writeText(path.join(TARGET_ROOT, ".husky/pre-commit"), buildPreCommit(stacks), { mode: 0o755 });
     writeText(path.join(TARGET_ROOT, ".husky/pre-push"), buildPrePush(stacks), { mode: 0o755 });
+
+    hooksPathStatus = configureHooksPath(TARGET_ROOT);
+    if (hooksPathStatus === "configured") {
+      console.log("  ✓ git config core.hooksPath .husky (los hooks van a correr solos desde ahora)");
+    } else if (hooksPathStatus === "failed") {
+      console.log("  ⚠ No pude correr 'git config core.hooksPath .husky' automáticamente — corrélo a mano.");
+    } else {
+      console.log(
+        "  ⚠ Todavía no es un repo git — corré 'git init' y después 'git config core.hooksPath .husky' " +
+          "para que estos hooks se activen (si no, quedan escritos pero git nunca los ejecuta)."
+      );
+    }
 
     if (ciHost === "github") {
       console.log("\nCI (GitHub Actions — remote 'origin' detectado en github.com):");
@@ -320,22 +348,34 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
   console.log("\nProtecciones extra:");
   ensureGitignore(TARGET_ROOT);
 
+  const hooksStep = !installGitHooks
+    ? "  4. (omitido) No se instalaron git hooks en esta corrida."
+    : hooksPathStatus === "configured"
+    ? "  4. [listo] 'core.hooksPath' ya apunta a .husky — los hooks corren solos desde el próximo commit/push."
+    : hooksPathStatus === "no-git"
+    ? "  4. [obligatorio] Corré 'git init' y después 'git config core.hooksPath .husky' — sin esto los hooks generados no hacen nada."
+    : "  4. [obligatorio] Corré 'git config core.hooksPath .husky' a mano — no se pudo configurar automáticamente.";
+
   const ciStep = !installGitHooks
     ? "  5. (omitido) No se instalaron git hooks/CI en esta corrida — volvé a correr el instalador si los querés."
     : ciHost === "github"
-    ? "  5. Configurar branch protection en GitHub apuntando a '.github/workflows/security.yml'."
+    ? "  5. [recomendado] Configurar branch protection en GitHub apuntando a '.github/workflows/security.yml'."
     : ciHost === "gitlab"
-    ? "  5. Configurar merge request approval rules / push rules en GitLab apuntando al pipeline '.gitlab-ci.yml'."
-    : "  5. (pendiente) No se generó CI — armalo a mano o volvé a correr el instalador con --ci github|gitlab.";
+    ? "  5. [recomendado] Configurar merge request approval rules / push rules en GitLab apuntando al pipeline '.gitlab-ci.yml'."
+    : "  5. [pendiente] No se generó CI — armalo a mano o volvé a correr el instalador con --ci github|gitlab.";
 
   console.log(`
 Listo. Próximos pasos:
-  1. pip install pyyaml pytest --break-system-packages
-  2. pytest .agent-security/test_policy_engine.py
-  3. Revisar cualquier archivo *.new (ya existía uno con ese nombre) y mergearlo a mano.
-  4. Si instalaste git hooks: 'npx husky init' (o mover .husky/pre-commit y pre-push a tu setup de husky) y 'chmod +x .husky/*'.
+  1. [recomendado] pip install pyyaml pytest --break-system-packages
+  2. [recomendado] pytest .agent-security/test_policy_engine.py
+  3. [si aplica] Revisar cualquier archivo *.new (ya existía uno con ese nombre) y mergearlo a mano.
+${hooksStep}
 ${ciStep}
-  6. Editar .agent-security/policy.yaml a gusto — es la única fuente de verdad para las reglas.
+  6. [opcional] Editar .agent-security/policy.yaml a gusto — es la única fuente de verdad para las reglas.
+
+¿Alguno de estos pasos no queda claro o no sabés si te aplica? Ver
+.agent-security/POST_INSTALL.md — explica cada uno en detalle: qué es, por
+qué existe, y qué pasa concretamente si te lo salteás.
 `);
 }
 

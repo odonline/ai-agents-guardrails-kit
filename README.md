@@ -39,11 +39,20 @@ GUARDRAILS_REPO_URL=https://tu-host.com/TU-ORG/ai-agents-guardrails-kit.git \
 
 Todos corren interactivamente: detectan el stack del proyecto, preguntan
 para qué agente(s) instalar, y opcionalmente agregan git hooks + un
-workflow de CI de referencia. Para saltar los prompts (CI, scripting):
+workflow de CI de referencia — GitHub Actions o GitLab CI, autodetectado
+del remote `origin` del repo (o forzado con `--ci github|gitlab|none`).
+Para saltar los prompts (CI, scripting):
 
 ```bash
-curl -fsSL .../bootstrap.sh | bash -s -- --agents claude-code --stacks node --yes
+curl -fsSL .../bootstrap.sh | bash -s -- --agents claude-code --stacks node --ci github --yes
 ```
+
+Cuando instala los git hooks, si el directorio ya es un repo git el
+instalador configura `core.hooksPath` solo — sin esto, `git` nunca llega a
+ejecutar los hooks generados en `.husky/`. El resumen final indica, paso
+por paso, qué es obligatorio, qué es recomendado y qué es opcional para tu
+instalación puntual; el detalle de cada paso queda en
+`.agent-security/POST_INSTALL.md` una vez instalado.
 
 ## Si forkeás/hosteás esto en otro lugar
 
@@ -72,12 +81,20 @@ clone (`https://github.com/...` vs `https://gitlab.com/...` vs
 ├── policy_engine.py       # motor de evaluación, agnóstico al lenguaje
 ├── final_check.py         # completion gate: re-ejecuta los checks, no
 │                          # confía en que el agente diga "tests OK"
-└── test_policy_engine.py  # pytest suite
+├── test_policy_engine.py  # pytest suite
+└── POST_INSTALL.md        # explica cada paso del resumen final del
+                            # instalador (qué es, por qué, qué pasa si te
+                            # lo salteás)
 
 .claude/ | .github/hooks/ | .agents/   # adapter fino por harness — solo
                                         # traducen el JSON de cada uno
-.husky/pre-commit, .husky/pre-push     # generados según el stack
-.github/workflows/security.yml         # CI de referencia
+.husky/pre-commit, .husky/pre-push     # generados según el stack —
+                                        # core.hooksPath se configura solo
+                                        # si el directorio ya es un repo git
+.github/workflows/security.yml         # CI de referencia (GitHub)
+.gitlab-ci.yml                         # CI de referencia (GitLab) — se
+                                        # genera el que corresponda según
+                                        # el remote 'origin', nunca ambos
 AGENTS.md, CLAUDE.md, GEMINI.md        # contrato operativo (no es
                                         # control de seguridad, eso es
                                         # policy_engine.py)

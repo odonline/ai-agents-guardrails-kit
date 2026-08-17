@@ -84,6 +84,7 @@ Object.keys(STACK_MARKERS).forEach((stack) => {
     runInstall(dir, ["--agents", "claude-code", "--stacks", stack, "--git-hooks", "false", "--yes"]);
     assert(exists(dir, ".agent-security/policy_engine.py"), "missing policy_engine.py");
     assert(exists(dir, ".agent-security/policy.yaml"), "missing policy.yaml");
+    assert(exists(dir, ".agent-security/POST_INSTALL.md"), "missing .agent-security/POST_INSTALL.md");
     assert(exists(dir, ".claude/settings.json"), "missing .claude/settings.json");
     assert(exists(dir, "AGENTS.md") && exists(dir, "CLAUDE.md") && exists(dir, "GEMINI.md"), "missing contract files");
   });
@@ -153,6 +154,38 @@ test("invalid --ci value exits non-zero with a clear error", () => {
     assert(/valor inv.lido/i.test(e.stderr || e.message), "expected a clear error message about the invalid --ci value");
   }
   assert(threw, "expected install.js to exit non-zero on an invalid --ci value");
+});
+
+function gitConfigGet(dir, key) {
+  try {
+    return execFileSync("git", ["config", "--get", key], { cwd: dir, encoding: "utf8" }).trim();
+  } catch (e) {
+    return null;
+  }
+}
+
+test("git-hooks in an existing repo auto-configures core.hooksPath", () => {
+  const dir = mkTmp("hookspath");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir, "https://github.com/someorg/somerepo.git");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  assert(gitConfigGet(dir, "core.hooksPath") === ".husky", "expected core.hooksPath to be set to .husky automatically");
+});
+
+test("git-hooks without a .git repo does not fail and does not set hooksPath anywhere", () => {
+  const dir = mkTmp("hookspath-nogit");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  const out = runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  assert(exists(dir, ".husky/pre-commit"), "hooks should still be written even without a git repo yet");
+  assert(/git init/.test(out), "expected the output to point the user at 'git init' when there's no repo yet");
+});
+
+test("--git-hooks false never touches core.hooksPath", () => {
+  const dir = mkTmp("hookspath-off");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir, "https://github.com/someorg/somerepo.git");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "false", "--yes"]);
+  assert(gitConfigGet(dir, "core.hooksPath") === null, "core.hooksPath should be untouched when git hooks weren't requested");
 });
 
 test("existing file is preserved, new content written as *.new", () => {

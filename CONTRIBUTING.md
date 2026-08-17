@@ -19,8 +19,16 @@ ruby: {
     { pattern: "\\bgem\\s+push\\b", action: "ask", reason: "Publishing a gem requires approval." },
   ],
   ci: { setupAction: "ruby/setup-ruby@v1", withBlock: "ruby-version: '3.3'", install: "bundle install" },
+  gitlabCi: { image: "ruby:3.3", install: "bundle install" },
 },
 ```
+
+`ci` es el setup step para GitHub Actions; `gitlabCi` es la imagen Docker
+equivalente para GitLab CI (`generate.js` genera ambos formatos de CI a
+partir del mismo stack — el instalador elige uno según el host git
+detectado, ver `README.md`). No te olvides de sumar el nuevo stack a
+`STACK_MARKERS` en `test/install.test.js` si querés que el smoke test lo
+cubra.
 
 Después:
 ```bash
