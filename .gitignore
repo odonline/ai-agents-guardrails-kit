@@ -1,4 +1,5 @@
 node_modules/
+Tasks/
 *.tgz
 *.log
 .DS_Store

@@ -6,7 +6,8 @@
     "install-guardrails": "./install.js"
   },
   "scripts": {
-    "docs": "node docs.js"
+    "docs": "node docs.js",
+    "test": "node test/install.test.js"
   },
   "files": [
     "install.js",

@@ -31,6 +31,7 @@ const STACKS = {
       { pattern: "\\bnpx\\s+\\S+@\\S+", action: "ask", reason: "Running an unpinned remote npx package requires approval." },
     ],
     ci: { setupAction: "actions/setup-node@v4", withBlock: 'node-version: 20', install: "npm ci" },
+    gitlabCi: { image: "node:20", install: "npm ci" },
   },
 
   php: {
@@ -50,6 +51,7 @@ const STACKS = {
       { pattern: "\\bcomposer\\s+(remove|require)\\b", action: "ask", reason: "Changing dependencies requires approval." },
     ],
     ci: { setupAction: "shivammathur/setup-php@v2", withBlock: "php-version: '8.3'", install: "composer install --no-interaction" },
+    gitlabCi: { image: "composer:2", install: "composer install --no-interaction" },
   },
 
   "java-maven": {
@@ -66,6 +68,7 @@ const STACKS = {
       { pattern: "\\bmvn\\s+.*-Dmaven\\.test\\.skip(=true)?\\b", action: "ask", reason: "Skipping tests requires approval." },
     ],
     ci: { setupAction: "actions/setup-java@v4", withBlock: "distribution: temurin\n          java-version: '21'", install: "mvn -q -B -DskipTests install" },
+    gitlabCi: { image: "maven:3.9-eclipse-temurin-21", install: "mvn -q -B -DskipTests install" },
   },
 
   "java-gradle": {
@@ -81,6 +84,7 @@ const STACKS = {
       { pattern: "\\./gradlew\\s+.*\\bpublish\\b", action: "ask", reason: "Publishing an artifact requires approval." },
     ],
     ci: { setupAction: "actions/setup-java@v4", withBlock: "distribution: temurin\n          java-version: '21'", install: "chmod +x gradlew" },
+    gitlabCi: { image: "eclipse-temurin:21-jdk", install: "chmod +x gradlew" },
   },
 
   python: {
@@ -97,6 +101,7 @@ const STACKS = {
       { pattern: "\\bpip\\s+install\\s+.*--index-url\\b", action: "ask", reason: "Installing from a non-default index requires approval." },
     ],
     ci: { setupAction: "actions/setup-python@v5", withBlock: "python-version: '3.12'", install: "pip install -r requirements.txt --break-system-packages || true" },
+    gitlabCi: { image: "python:3.12-slim", install: "pip install -r requirements.txt --break-system-packages || true" },
   },
 };
 

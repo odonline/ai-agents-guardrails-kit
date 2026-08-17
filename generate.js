@@ -173,4 +173,51 @@ ${checkSteps || "      # No stack-specific checks configured."}
 `;
 }
 
-module.exports = { buildPolicyYaml, buildPreCommit, buildPrePush, buildCiWorkflow, CORE_BLOCKED_COMMANDS, CORE_PROTECTED_PATHS };
+function buildGitlabCiYaml(selectedStackKeys) {
+  const stacks = selectedStackKeys.map((k) => ({ key: k, ...STACKS[k] })).filter((s) => s.label);
+
+  const stackJobs = stacks
+    .map((s) => {
+      if (!s.gitlabCi) return "";
+      const scriptLines = [s.gitlabCi.install, ...s.checks.map((c) => c.command)];
+      return `${s.key}-checks:
+  stage: test
+  image: ${s.gitlabCi.image}
+  script:
+${scriptLines.map((l) => `    - ${yamlStr(l)}`).join("\n")}
+`;
+    })
+    .filter(Boolean)
+    .join("\n");
+
+  return `# Place at .gitlab-ci.yml (repo root)
+stages:
+  - test
+
+policy-engine-test:
+  stage: test
+  image: python:3.12-slim
+  script:
+    - pip install pyyaml pytest --break-system-packages
+    - pytest .agent-security/test_policy_engine.py
+
+${stackJobs || "# No stack detected at install time — add your language's job here.\n"}
+secret-scan:
+  stage: test
+  image: zricethezav/gitleaks:latest
+  script:
+    - gitleaks detect --source . --no-git -v
+
+# Add SAST / dependency scanning here (Semgrep, npm audit, composer audit, etc).
+`;
+}
+
+module.exports = {
+  buildPolicyYaml,
+  buildPreCommit,
+  buildPrePush,
+  buildCiWorkflow,
+  buildGitlabCiYaml,
+  CORE_BLOCKED_COMMANDS,
+  CORE_PROTECTED_PATHS,
+};

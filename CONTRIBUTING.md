@@ -49,3 +49,20 @@ node docs.js
 node install.js --target /tmp/test --agents claude-code --stacks node --yes
 python3 -m pytest /tmp/test/.agent-security/test_policy_engine.py -q
 ```
+
+## Correr los tests después de tocar install.js / generate.js / stacks.js
+
+`test/install.test.js` es la suite que valida el **instalador en sí**
+(qué se escribe, para qué stack, según qué host git) — no confundir con
+`.agent-security/test_policy_engine.py`, que valida el motor de políticas
+que queda instalado en el proyecto destino. Sin dependencias externas,
+corre igual en Windows/macOS/Linux:
+
+```bash
+npm test
+```
+
+Corré esto después de cualquier cambio a `install.js`, `generate.js` o
+`stacks.js` — está en el pipeline (`.gitlab-ci.yml`) así que un cambio que
+lo rompa no debería mergearse. Si agregás un stack nuevo o un caso de
+detección de host, sumá su caso ahí también.

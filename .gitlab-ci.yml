@@ -15,6 +15,9 @@ self-test:
   script:
     - |
       set -e
+      echo "== Tests del propio instalador (install.js) =="
+      npm test
+
       echo "== Verificando que RULES.md esté al día =="
       cp RULES.md /tmp/RULES.md.before
       node docs.js

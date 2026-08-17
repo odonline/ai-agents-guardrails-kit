@@ -12,8 +12,9 @@
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
+const { execSync } = require("child_process");
 const { STACKS, detectStacks } = require("./stacks");
-const { buildPolicyYaml, buildPreCommit, buildPrePush, buildCiWorkflow } = require("./generate");
+const { buildPolicyYaml, buildPreCommit, buildPrePush, buildCiWorkflow, buildGitlabCiYaml } = require("./generate");
 
 const KIT_ROOT = __dirname;
 const TEMPLATES = path.join(KIT_ROOT, "templates");
@@ -60,7 +61,7 @@ const COMMON_FILES = [
 // which extra commands are dangerous) is language-specific.
 
 function parseArgs(argv) {
-  const args = { agents: null, target: process.cwd(), yes: false, gitHooks: null, stacks: null };
+  const args = { agents: null, target: process.cwd(), yes: false, gitHooks: null, stacks: null, ci: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--agents") args.agents = argv[++i].split(",").map((s) => s.trim());
@@ -68,9 +69,29 @@ function parseArgs(argv) {
     else if (a === "--target") args.target = path.resolve(argv[++i]);
     else if (a === "--yes" || a === "-y") args.yes = true;
     else if (a === "--git-hooks") args.gitHooks = argv[++i] !== "false";
+    else if (a === "--ci") args.ci = argv[++i].trim(); // github | gitlab | none
     else if (a === "--help" || a === "-h") args.help = true;
   }
   return args;
+}
+
+// Best-effort: classify the target's git host from its `origin` remote so
+// we generate the CI config that actually runs there (a GitHub Actions
+// workflow is dead weight on GitLab, and vice versa). Falls back to
+// "unknown" for self-hosted instances, missing remotes, or non-repos —
+// callers must handle that case explicitly instead of guessing.
+function detectGitHost(target) {
+  let url;
+  try {
+    url = execSync("git remote get-url origin", { cwd: target, stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim();
+  } catch (e) {
+    return "unknown";
+  }
+  if (/github\.com/i.test(url)) return "github";
+  if (/gitlab/i.test(url)) return "gitlab";
+  return "unknown";
 }
 
 function ask(rl, question) {
@@ -190,6 +211,7 @@ install-guardrails
   --stacks node,php,java-maven,java-gradle,python  Salta la detección de stack ("none" = ninguno)
   --target <dir>                                  Directorio del proyecto (default: cwd)
   --git-hooks / --git-hooks false                  Instalar hooks de Husky + workflow de CI
+  --ci github|gitlab|none                          Motor de CI a generar (default: autodetecta el remote 'origin')
   --yes                                            No preguntar confirmaciones
 
 Stacks soportados: ${Object.keys(STACKS).join(", ")}
@@ -227,6 +249,25 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
     const answer = await ask(rl, "\n¿Instalar también git hooks (Husky) + workflow de CI de referencia? [S/n]: ");
     installGitHooks = !/^n/i.test(answer.trim());
   }
+
+  let ciHost = args.ci;
+  if (ciHost && !["github", "gitlab", "none"].includes(ciHost)) {
+    console.error(`Valor inválido para --ci: ${ciHost}. Válidos: github, gitlab, none`);
+    process.exit(1);
+  }
+  if (installGitHooks && !ciHost) {
+    const detected = detectGitHost(TARGET_ROOT);
+    if (detected === "unknown" && rl) {
+      const answer = await ask(
+        rl,
+        "\nNo pude detectar el host git del remote 'origin'. ¿Qué CI generar? " +
+          "1) GitHub Actions  2) GitLab CI  3) Ninguno (configurarlo a mano) [3]: "
+      );
+      ciHost = { "1": "github", "2": "gitlab" }[answer.trim()] || "none";
+    } else {
+      ciHost = detected;
+    }
+  }
   if (rl) rl.close();
 
   const invalidStacks = (stacks || []).filter((s) => !STACKS[s]);
@@ -257,14 +298,35 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
   }
 
   if (installGitHooks) {
-    console.log("\nGit hooks + CI (generados según el/los stack(s)):");
+    console.log("\nGit hooks (generados según el/los stack(s)):");
     writeText(path.join(TARGET_ROOT, ".husky/pre-commit"), buildPreCommit(stacks), { mode: 0o755 });
     writeText(path.join(TARGET_ROOT, ".husky/pre-push"), buildPrePush(stacks), { mode: 0o755 });
-    writeText(path.join(TARGET_ROOT, ".github/workflows/security.yml"), buildCiWorkflow(stacks));
+
+    if (ciHost === "github") {
+      console.log("\nCI (GitHub Actions — remote 'origin' detectado en github.com):");
+      writeText(path.join(TARGET_ROOT, ".github/workflows/security.yml"), buildCiWorkflow(stacks));
+    } else if (ciHost === "gitlab") {
+      console.log("\nCI (GitLab CI — remote 'origin' detectado en GitLab):");
+      writeText(path.join(TARGET_ROOT, ".gitlab-ci.yml"), buildGitlabCiYaml(stacks));
+    } else {
+      console.log(
+        "\nCI: no se generó ningún archivo — no se detectó (ni se indicó con --ci) un host " +
+          "soportado. Corré de nuevo con --ci github o --ci gitlab, o armá tu pipeline a mano " +
+          "usando .agent-security/test_policy_engine.py y los checks de RULES.md como referencia."
+      );
+    }
   }
 
   console.log("\nProtecciones extra:");
   ensureGitignore(TARGET_ROOT);
+
+  const ciStep = !installGitHooks
+    ? "  5. (omitido) No se instalaron git hooks/CI en esta corrida — volvé a correr el instalador si los querés."
+    : ciHost === "github"
+    ? "  5. Configurar branch protection en GitHub apuntando a '.github/workflows/security.yml'."
+    : ciHost === "gitlab"
+    ? "  5. Configurar merge request approval rules / push rules en GitLab apuntando al pipeline '.gitlab-ci.yml'."
+    : "  5. (pendiente) No se generó CI — armalo a mano o volvé a correr el instalador con --ci github|gitlab.";
 
   console.log(`
 Listo. Próximos pasos:
@@ -272,7 +334,7 @@ Listo. Próximos pasos:
   2. pytest .agent-security/test_policy_engine.py
   3. Revisar cualquier archivo *.new (ya existía uno con ese nombre) y mergearlo a mano.
   4. Si instalaste git hooks: 'npx husky init' (o mover .husky/pre-commit y pre-push a tu setup de husky) y 'chmod +x .husky/*'.
-  5. Configurar branch protection en GitHub apuntando a '.github/workflows/security.yml'.
+${ciStep}
   6. Editar .agent-security/policy.yaml a gusto — es la única fuente de verdad para las reglas.
 `);
 }
