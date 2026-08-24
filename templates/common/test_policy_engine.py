@@ -1,7 +1,7 @@
 """
 Basic tests for the policy engine. Run with:
   pip install pyyaml pytest --break-system-packages
-  pytest .agent-security/test_policy_engine.py
+  python -m pytest .agent-security/test_policy_engine.py
 """
 import sys
 from pathlib import Path

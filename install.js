@@ -367,8 +367,8 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
 
   console.log(`
 Listo. Próximos pasos:
-  1. [recomendado] pip install pyyaml pytest --break-system-packages
-  2. [recomendado] pytest .agent-security/test_policy_engine.py
+  1. [recomendado] Instalar deps: si tenés (o VSCode te ofrece crear) un venv, activalo y 'pip install pyyaml pytest' ahí — sin --break-system-packages. Si no vas a usar venv, agregá --break-system-packages. Detalle en POST_INSTALL.md.
+  2. [recomendado] python -m pytest .agent-security/test_policy_engine.py
   3. [si aplica] Revisar cualquier archivo *.new (ya existía uno con ese nombre) y mergearlo a mano.
 ${hooksStep}
 ${ciStep}

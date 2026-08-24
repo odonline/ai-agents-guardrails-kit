@@ -19,10 +19,39 @@ console summary:
 
 ## 1–2. Install policy-engine deps and run its test suite — [recommended]
 
-```bash
-pip install pyyaml pytest --break-system-packages
-pytest .agent-security/test_policy_engine.py
-```
+Pick one, don't do both:
+
+- **You have (or your editor offers to create) a venv for this project** —
+  use it, don't fight it:
+  ```bash
+  # activate your venv first, e.g. .venv\Scripts\activate (Windows) or
+  # source .venv/bin/activate (macOS/Linux) — then, inside it:
+  pip install pyyaml pytest
+  pytest .agent-security/test_policy_engine.py
+  ```
+  No `--break-system-packages` needed — a venv is already isolated from the
+  system Python, that's the whole point of the flag existing.
+- **You're not using a venv for this project at all** — install straight
+  into the system/user Python:
+  ```bash
+  pip install pyyaml pytest --break-system-packages
+  python -m pytest .agent-security/test_policy_engine.py
+  ```
+  Use `python -m pytest`, not bare `pytest` — pip installs the `pytest`
+  script into a Scripts/bin directory that often isn't on `PATH` (pip
+  warns about this when it happens), so the bare command fails with
+  "command not found" even though the install succeeded. Running it as a
+  module through `python` (which is on `PATH`) sidesteps that.
+
+Don't run the system-wide command *and* accept a "create a venv?" prompt
+from your editor for the same install — that's how you end up with pyyaml
+installed system-wide while pytest also tries to run from a venv that was
+never actually created, and commands like
+`.venv/Scripts/python.exe -m pip install ...` fail with "No such file or
+directory" because the venv doesn't exist yet. If your editor is offering
+to create one, either accept it and install inside it (first bullet), or
+dismiss the prompt and stick with `--break-system-packages` (second
+bullet) — just pick one path.
 
 `policy_engine.py` is the actual enforcement logic (what gets denied, what
 needs approval). This runs its own test suite once, locally, so you find
@@ -96,8 +125,8 @@ overwritten by re-running the installer. The defaults are usable as-is;
 edit it when you have project-specific paths to protect (see "`.gitignore`
 does not protect anything here" in `.agent-security/README.md`) or
 commands to add. After editing, re-run
-`pytest .agent-security/test_policy_engine.py` to make sure nothing
-regressed.
+`python -m pytest .agent-security/test_policy_engine.py` to make sure
+nothing regressed.
 
 ## 7. Have an agent validate the guardrails itself — [optional, recommended once]
 

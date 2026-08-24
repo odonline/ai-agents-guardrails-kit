@@ -33,7 +33,7 @@ lives in `policy_engine.py` so there is exactly one place to audit and test.
 ## Editing the policy
 
 1. Edit `policy.yaml`.
-2. Run `pytest .agent-security/test_policy_engine.py`.
+2. Run `python -m pytest .agent-security/test_policy_engine.py`.
 3. This directory is itself protected: any agent trying to edit files under
    `.agent-security/**` gets an automatic `ask` decision (see
    `policy_engine.py`'s self-protection block). Changes should go through a
