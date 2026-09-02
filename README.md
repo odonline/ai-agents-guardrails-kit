@@ -101,6 +101,9 @@ clone (`https://github.com/...` vs `https://gitlab.com/...` vs
 .husky/pre-commit, .husky/pre-push     # generados según el stack —
                                         # core.hooksPath se configura solo
                                         # si el directorio ya es un repo git
+.husky/<cualquier-otro-hook>           # sólo si el proyecto ya tenía hooks:
+                                        # un shim que corre el tuyo primero
+                                        # (ver "Tus hooks de git no se pierden")
 .github/workflows/security.yml         # CI de referencia (GitHub)
 .gitlab-ci.yml                         # CI de referencia (GitLab) — se
                                         # genera el que corresponda según
@@ -109,6 +112,57 @@ AGENTS.md, CLAUDE.md, GEMINI.md        # contrato operativo (no es
                                         # control de seguridad, eso es
                                         # policy_engine.js)
 ```
+
+## Lo que el instalador NO hace con tu git
+
+No commitea. Nunca. Tu historia es tuya: el kit no corre `git add`, `commit`,
+`push`, `checkout`, `reset`, `merge`, `rebase`, `stash`, `tag` ni `branch` — no lo
+hace el instalador, no lo hace el desinstalador, y no lo hace nada de lo que el
+kit genera. Un hook generado que te staggeara archivos sería peor que el
+instalador haciéndolo una vez: lo haría en cada commit, en el clone de cada
+persona del equipo.
+
+Lo único que escribe en git es **una** pieza de config: `core.hooksPath` (sin eso
+los hooks de `.husky/` no se ejecutan nunca), que queda registrada en el manifest
+y se revierte al desinstalar o desactivar. Todo lo demás que escribe queda **sin
+trackear**, para que lo revises y lo commitees vos.
+
+Está verificado por tests, no sólo prometido acá: se inspeccionan los sitios de
+invocación, el contenido generado (hooks y los dos formatos de CI), y hay un caso
+end-to-end que instala sobre un repo con un commit y un working tree sucio y
+comprueba que `HEAD`, el index y los archivos sin commitear quedaron igual.
+
+## Tus hooks de git no se pierden
+
+Los hooks de `.husky/` no corren si `core.hooksPath` no apunta ahí, así que el
+instalador lo configura. El detalle que importa: **apuntar `core.hooksPath` a
+`.husky` no hace que `.husky` "gane" sobre el directorio anterior — hace que git
+deje de mirarlo por completo.** Verificado, no asumido.
+
+Eso afecta a cualquier proyecto que ya tenga hooks propios: en `.githooks/` con
+su `core.hooksPath` puesto, o directamente en `.git/hooks/` — donde los deja el
+`pre-commit` de Python, husky v4, lefthook o algún IDE. Y como nosotros sólo
+generamos `pre-commit` y `pre-push`, un `commit-msg` o un `post-merge` que
+hubiera no tendría ni reemplazo: desaparecía.
+
+Así que el instalador **encadena en vez de pisar**. Para cada hook que encuentra
+en el directorio que estaba efectivo antes (ignorando los `*.sample`, que git
+nunca ejecuta) escribe en `.husky/` un shim que corre el tuyo primero y propaga
+su exit code — si el tuyo falla, el commit se corta ahí y el nuestro no corre.
+Para `pre-commit` y `pre-push` el bloque va arriba del hook generado; para
+cualquier otro tipo, el archivo entero es un passthrough sin checks propios.
+
+El bloque está marcado con `>>> guardrails-kit: chained hook >>>` y explica en
+un comentario qué es y cómo sacarlo, porque alguien lo va a encontrar en un
+`git diff` sin contexto. `--uninstall` lo borra; `--no-chain-hooks` instala sin
+encadenar.
+
+Cuando encadenar **no** se puede hacer con seguridad —el `core.hooksPath`
+anterior es absoluto o apunta afuera del repo, el directorio no se puede leer, o
+ya hay un `.husky/<hook>` que no escribimos nosotros— el instalador **no toca
+`core.hooksPath`**, explica qué encontró y te da el comando exacto por si querés
+seguir igual. Preferimos dejarte los guardrails inactivos y decírtelo, antes que
+apagarte en silencio una salvaguarda que ya tenías.
 
 ## Apagarlo o sacarlo
 

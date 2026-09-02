@@ -1,6 +1,6 @@
 ---
 name: sdd-spec-iteration
-description: Spec-driven development workflow for the ai-agents-guardrails-kit installer/generator. Load before writing or refining a spec in Tasks/**, turning an idea/bug/refactor into a plan, splitting a plan into numbered tasks, implementing from a task file, or making any non-trivial change to install.js, stacks.js, generate.js, docs.js, or templates/**. Carries the kit-side vs payload rule, the G1-G16 constraints, the Node engine port contract, and the repo's real verification commands.
+description: Spec-driven development workflow for the ai-agents-guardrails-kit installer/generator. Load before writing or refining a spec in Tasks/**, turning an idea/bug/refactor into a plan, splitting a plan into numbered tasks, implementing from a task file, or making any non-trivial change to install.js, stacks.js, generate.js, docs.js, or templates/**. Carries the kit-side vs payload rule, the G1-G17 constraints, the Node engine port contract, and the repo's real verification commands.
 ---
 
 # Skill: SDD Spec Iteration & Task Planning
@@ -245,6 +245,7 @@ Cited by ID in specs, tasks, and hard stops.
 | **G14** | **Behavior parity on port.** Porting the engine may not drop a single test case or a single rule. Prove it test-for-test, comparing against `main` (`git show main:templates/common/policy_engine.py`), not against the working tree. | port work |
 | **G15** | **Uninstall is subtractive, honest, and confirmed.** It removes what the kit put there, never what the user edited: only files the installer created that are still byte-identical to what it wrote, per the manifest. Anything modified, unrecorded, or unrecognized is *reported for the human*, never deleted and never programmatically rewritten. It must print the full plan — what will be deleted, what will be kept and why, what happens to `core.hooksPath` and `.gitignore` — and wait for confirmation before acting (`--yes` to skip, `--dry-run` to stop after the plan). Plan and summary must both state, unmissably, **whether the guardrails are still active**. An uninstall may end deliberately incomplete; ending silently with enforcement still wired may not. It must also unset `core.hooksPath` (the mirror of G12) and revert only the `.gitignore` lines it added. Deleting a user's edited policy or contract file is data loss, not cleanup. | uninstaller |
 | **G16** | **No kill switch inside the engine.** Deactivation works by **unhooking** — removing the harness's hook wiring so the engine is never called — never by a flag, sentinel file, or `enabled: false` that the engine itself reads and then allows everything. A code path inside the engine whose job is to return `allow` for all input is a fail-open path (G2) and a single file an agent could try to create to free itself (G8). Unhooking is also visible in a `git diff`; a silent flag is not. | engine, uninstaller |
+| **G17** | **The kit never commits.** The target repository's history belongs to the client. Nothing kit-side or payload may run `git add`, `commit`, `push`, `checkout`, `reset`, `merge`, `rebase`, `stash`, `tag`, `branch`, or any other history- or index-mutating command — not in `install.js`, not in the uninstaller or toggle, and not in anything the kit *generates* (a hook that staged files for you would keep doing it, in everyone's clone). The kit reads git state freely and writes exactly one piece of git config, `core.hooksPath` (G12), which it records and reverts. Everything it writes is left **untracked**, for the client to review and commit themselves. Enforced by tests that inspect invocation sites and generated content, not by grepping for words — the sources legitimately contain `git push --force` as a blocked-command pattern. | installer, uninstaller, renderers |
 
 ## Repo-Specific Facts That Change Specs
 
@@ -492,6 +493,10 @@ Hard stops — stop and ask:
   target-project `node_modules` instead of the vendored copy (G1).
 - **Reintroducing a Python fallback engine** — there is exactly one engine (G3).
 - **Running the installer against this repo** instead of a scratch directory.
+- **Making the kit run any git command that mutates the target repo** —
+  `add`, `commit`, `push`, `checkout`, `reset`, `merge`, `rebase`, `stash`,
+  `tag`, `branch` — from the installer, the uninstaller, or anything the kit
+  *generates* (G17). `core.hooksPath` is the one contracted git write.
 - **Committing or pushing** without being asked.
 - Product behavior that is not decided in the spec.
 

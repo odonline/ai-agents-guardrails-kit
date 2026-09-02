@@ -2,6 +2,87 @@
 
 ## Unreleased
 
+### El kit nunca commitea, y ahora está garantizado por tests (G17)
+
+La historia del repo destino es del cliente. Esto **ya era cierto** —ninguna
+versión del kit corrió nunca `git add`, `commit` o `push`— pero no había nada que
+lo impidiera a futuro. Ahora sí:
+
+- Un test inspecciona los **sitios de invocación** (qué se le pasa a
+  `execSync`/`execFileSync`/`spawnSync`) en el instalador, el generador, el
+  desinstalador, el toggle, el motor y los tres adapters. No busca texto: el
+  fuente contiene `git push --force` y `git commit --no-verify` legítimamente,
+  como patrones de `blocked_commands` y como fixtures de test.
+- Otro revisa el **contenido generado** — `pre-commit`, `pre-push` y los dos
+  formatos de CI. Un hook que staggeara por vos sería peor que el instalador
+  haciéndolo una vez: lo haría en cada commit, en el clone de todo el equipo.
+- Y uno end-to-end instala sobre un repo con un commit y un working tree sucio,
+  y verifica que `HEAD`, el index y los archivos sin commitear quedaron igual, y
+  que lo que el kit escribió quedó **sin trackear**.
+- Los tres se verificaron por mutación: se les inyectaron seis formas distintas
+  de violación (inline, forma de array, template literal con interpolación, un
+  verbo desconocido, y un `git add` dentro de un hook generado) y las detectaron
+  todas, sin falsos positivos sobre la config legítima ni sobre la prosa.
+
+Lo único que el kit escribe en git sigue siendo `core.hooksPath`, registrado en
+el manifest y revertido al desinstalar o desactivar.
+
+
+### El instalador ya no le roba los git hooks al proyecto
+
+Bug real del instalador, no sólo del desinstalador. `install.js` corría
+`git config core.hooksPath .husky` sin leer qué había antes, y —verificado, no
+asumido— apuntar `core.hooksPath` a `.husky` **no** hace que `.husky` gane sobre
+el directorio anterior: hace que git deje de mirarlo por completo.
+
+Cualquier proyecto con hooks propios los perdía en silencio al instalar: los de
+`.githooks/` con su `core.hooksPath` puesto, y los de `.git/hooks/` — donde los
+deja el `pre-commit` de Python, husky v4, lefthook o algún IDE. Peor: como el kit
+sólo genera `pre-commit` y `pre-push`, un `commit-msg` o un `post-merge` que
+hubiera no tenía ni reemplazo.
+
+Ahora el instalador **encadena**. Para cada hook del directorio que estaba
+efectivo antes (ignorando los `*.sample`, que git nunca ejecuta) escribe en
+`.husky/` un shim que corre el tuyo primero y propaga su exit code: si el tuyo
+falla, la operación se corta ahí y el nuestro no corre. En `pre-commit` y
+`pre-push` el bloque va arriba del hook generado; para cualquier otro tipo el
+archivo es un passthrough sin checks propios. `pre-push` recibe los refs por
+stdin, así que ese shim los buferea y se los pasa a los dos hooks — sin eso, el
+primero que lee se los consume al otro.
+
+Cuando encadenar no se puede hacer con seguridad —`core.hooksPath` anterior
+absoluto o afuera del repo, directorio ilegible, o un `.husky/<hook>` que no
+escribimos— el instalador **no toca `core.hooksPath`**, explica qué encontró y da
+el comando exacto por si querés seguir igual. Los guardrails quedan inactivos y
+dicho, en vez de activos habiendo apagado una salvaguarda tuya.
+
+- `--no-chain-hooks` instala sin encadenar (el comportamiento anterior).
+- El manifest registra `git.chainedFrom` y `git.shims[]`, así que `--uninstall`
+  borra los shims y devuelve `core.hooksPath` a su valor previo.
+- El bloque lleva el marcador `>>> guardrails-kit: chained hook >>>` y un
+  comentario que explica qué es y cómo sacarlo: alguien lo va a encontrar en un
+  `git diff` sin contexto.
+
+Tres bugs que sólo aparecieron ejecutando esto, no leyéndolo:
+
+- **`${1+"$@"}` dentro de un template literal de JS es una interpolación de JS.**
+  Evaluaba `1 + "$@"` y el shim quedaba con `1$@`, así que el hook del proyecto
+  recibía `1origin` como primer argumento. Se escapó, y hay un test que revisa el
+  texto emitido, no el fuente.
+- **`git rev-parse --git-path hooks` respeta `core.hooksPath`.** En un repo con el
+  kit instalado devuelve `.husky`, o sea que el shim se habría llamado a sí mismo
+  en loop. Lo correcto es `--git-common-dir`, que además resuelve bien en un
+  worktree enlazado.
+- **Reinstalar envenenaba el manifest.** `core.hooksPath` ya era `.husky` —
+  nuestro—, y se registraba como "el valor previo a restaurar", así que
+  `--uninstall` habría dejado a git apuntando a un `.husky/` recién borrado.
+  Ahora se hereda el valor real del manifest anterior.
+
+`test/install.test.js` pasa de 87 a 102 casos, con verificación funcional bajo
+git de verdad: el `pre-commit` del proyecto sigue corriendo, un `commit-msg`
+también, `pre-push` recibe los refs completos, y un hook del proyecto que falla
+aborta el commit.
+
 ### Ahora se puede apagar y sacar (`--disable` / `--enable` / `--uninstall`)
 
 Instalar guardrails en un proyecto ajeno es invasivo: toca `.agent-security/`, la

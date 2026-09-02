@@ -58,6 +58,18 @@ as a single file you can read and checksum — see `vendor/VENDOR.md`.
    human-reviewed PR, not an agent edit in the same session it's trying to
    bypass.
 
+## What this never does to your git history
+
+It does not commit. The installer, the uninstaller and `toggle.js` never run
+`git add`, `commit`, `push`, `checkout`, `reset`, `merge`, `rebase`, `stash`,
+`tag` or `branch`, and neither does anything the kit generated — a hook that
+staged files for you would keep doing it, on every commit, in everyone's clone.
+
+The one piece of git state the installer writes is `core.hooksPath` (without it
+the hooks in `.husky/` never execute), recorded in the manifest and reverted when
+you uninstall or disable. Everything else it wrote is sitting there untracked,
+for you to review and commit yourself.
+
 ## Turning it off for a while
 
 ```bash

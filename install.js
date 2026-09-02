@@ -15,7 +15,10 @@ const readline = require("readline");
 const { execSync } = require("child_process");
 const crypto = require("crypto");
 const { STACKS, detectStacks } = require("./stacks");
-const { buildPolicyYaml, buildPreCommit, buildPrePush, buildCiWorkflow, buildGitlabCiYaml } = require("./generate");
+const {
+  buildPolicyYaml, buildPreCommit, buildPrePush, buildCiWorkflow, buildGitlabCiYaml,
+  buildChainShim, buildPassthroughHook, prependShim, renderPrevHookPath, HOOKS_WITH_STDIN,
+} = require("./generate");
 
 const KIT_ROOT = __dirname;
 const TEMPLATES = path.join(KIT_ROOT, "templates");
@@ -75,7 +78,7 @@ const COMMON_FILES = [
 // which extra commands are dangerous) is language-specific.
 
 function parseArgs(argv) {
-  const args = { agents: null, target: process.cwd(), yes: false, gitHooks: null, stacks: null, ci: null, uninstall: false, disable: false, enable: false, dryRun: false };
+  const args = { agents: null, target: process.cwd(), yes: false, gitHooks: null, stacks: null, ci: null, uninstall: false, disable: false, enable: false, dryRun: false, chainHooks: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--agents") args.agents = argv[++i].split(",").map((s) => s.trim());
@@ -88,6 +91,7 @@ function parseArgs(argv) {
     else if (a === "--disable") args.disable = true;
     else if (a === "--enable") args.enable = true;
     else if (a === "--dry-run") args.dryRun = true;
+    else if (a === "--no-chain-hooks") args.chainHooks = false;
     else if (a === "--help" || a === "-h") args.help = true;
   }
   return args;
@@ -160,7 +164,7 @@ const MANIFEST = {
   files: [],
   newFiles: [],
   dirsCreated: [],
-  git: { hooksPathBefore: null, hooksPathSet: null },
+  git: { hooksPathBefore: null, hooksPathSet: null, chainedFrom: null, shims: [] },
   gitignore: { linesAdded: [], created: false },
 };
 
@@ -315,14 +319,6 @@ async function selectStacks(rl, target) {
 // automatically whenever the target is already a git repo.
 function configureHooksPath(target) {
   if (!fs.existsSync(path.join(target, ".git"))) return "no-git";
-  // Record what was there before us. Without this, uninstall can only --unset,
-  // which is wrong for a project that already had its own hooksPath.
-  try {
-    MANIFEST.git.hooksPathBefore =
-      execSync("git config --get core.hooksPath", { cwd: target, encoding: "utf8" }).trim() || null;
-  } catch (e) {
-    MANIFEST.git.hooksPathBefore = null; // not set, which is git's default
-  }
   try {
     execSync("git config core.hooksPath .husky", { cwd: target, stdio: "ignore" });
     MANIFEST.git.hooksPathSet = ".husky";
@@ -330,6 +326,199 @@ function configureHooksPath(target) {
   } catch (e) {
     return "failed";
   }
+}
+
+// ── chaining the project's pre-existing hooks (G12) ───────────────────────
+//
+// Pointing core.hooksPath at .husky/ does not make .husky win over whatever was
+// there before — it makes git stop looking at the old directory at all. So a
+// project with its own hooks loses them, silently, including hook types we do
+// not generate and therefore do not even replace. Breaking a project's existing
+// safeguard while installing a safeguard is the exact failure this kit is for.
+//
+// This detects what was effective BEFORE we touch anything, so main() can shim
+// it. Read-only: it decides, it does not write.
+
+/** Hooks git never executes, so there is nothing to chain. */
+function isChainableHookFile(dirAbs, name) {
+  if (name.endsWith(".sample")) return false;
+  const p = path.join(dirAbs, name);
+  let st;
+  try {
+    st = fs.statSync(p);
+  } catch (e) {
+    return false;
+  }
+  if (!st.isFile()) return false;
+  // X_OK matches git's own behavior on POSIX, where it skips hooks that are not
+  // executable. On Windows this is permissive, which also matches git there.
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * On a reinstall, `core.hooksPath` is already `.husky` — ours. Reading that as
+ * "the value to go back to" would be wrong twice over: it would make
+ * `--uninstall` point git at a `.husky/` it just deleted, and it would drop the
+ * chaining the first install set up. The previous install recorded the real
+ * answer, so use it.
+ */
+function inheritPreviousHooksPath(target) {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(target, MANIFEST_REL), "utf8"));
+    return m && m.git ? m.git.hooksPathBefore || null : null;
+  } catch (e) {
+    return null; // no manifest, or unreadable — git's default is "unset"
+  }
+}
+
+function detectPreviousHooks(target) {
+  if (!fs.existsSync(path.join(target, ".git"))) {
+    return { mode: "none", reason: "no-git", hooks: [] };
+  }
+
+  let previous = null;
+  try {
+    previous =
+      execSync("git config --get core.hooksPath", {
+        cwd: target,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() || null;
+  } catch (e) {
+    previous = null; // not set, which is git's default
+  }
+
+  // Reinstall: what is there now is ours, so look through it to what the project
+  // had before the first install.
+  const isOurs = (v) =>
+    v && !path.isAbsolute(v) && path.relative(target, path.resolve(target, v)).split(path.sep)[0] === ".husky";
+  if (isOurs(previous)) {
+    previous = inheritPreviousHooksPath(target);
+    if (isOurs(previous)) previous = null; // a manifest that recorded itself; treat as unset
+  }
+
+  // Recorded whatever the outcome: without the previous value, uninstall can
+  // only --unset, which is wrong for a project that had its own hooksPath.
+  MANIFEST.git.hooksPathBefore = previous;
+
+  let dirAbs;
+  let ref;
+
+  if (previous) {
+    if (path.isAbsolute(previous)) {
+      return { mode: "unsafe", reason: "absolute", previous, hooks: [] };
+    }
+    const resolved = path.resolve(target, previous);
+    const rel = path.relative(target, resolved);
+    if (rel.startsWith("..")) {
+      return { mode: "unsafe", reason: "outside", previous, hooks: [] };
+    }
+    dirAbs = resolved;
+    // Committed config means the same thing on every machine — use it verbatim.
+    ref = { kind: "literal", dir: previous.replace(/\\/g, "/").replace(/\/+$/, "") };
+  } else {
+    let commonDir;
+    try {
+      commonDir = execSync("git rev-parse --git-common-dir", {
+        cwd: target,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch (e) {
+      return { mode: "unsafe", reason: "unreadable", previous, hooks: [] };
+    }
+    dirAbs = path.join(path.resolve(target, commonDir), "hooks");
+    // NOT committed, so it has to be resolved at run time — each developer
+    // chains their own local hooks. See renderPrevHookPath() in generate.js for
+    // why this is --git-common-dir and not --git-path hooks.
+    ref = { kind: "gitdir" };
+  }
+
+  if (!fs.existsSync(dirAbs)) {
+    return { mode: "none", reason: "no-previous-dir", previous, hooks: [] };
+  }
+
+  let entries;
+  try {
+    entries = fs.readdirSync(dirAbs);
+  } catch (e) {
+    return { mode: "unsafe", reason: "unreadable", previous, dir: dirAbs, hooks: [] };
+  }
+
+  const hooks = entries.filter((name) => isChainableHookFile(dirAbs, name)).sort();
+  if (!hooks.length) {
+    return { mode: "none", reason: "nothing-to-chain", previous, dir: dirAbs, hooks: [] };
+  }
+  return { mode: "chain", previous, dir: dirAbs, ref, hooks };
+}
+
+/**
+ * Is the hook already on disk chained to this same origin?
+ *
+ * Matters on reinstall: G4 makes us write a `.new` rather than overwrite, and
+ * without this check that looks like "chaining failed" — when in fact the file
+ * sitting there is the chain we wrote last time and everything is fine. It also
+ * catches the case that is NOT fine: a `.husky/<hook>` chained to some other
+ * directory, or not chained at all.
+ */
+function existingHookAlreadyChained(destAbs, hookName, ref) {
+  let text;
+  try {
+    text = fs.readFileSync(destAbs, "utf8");
+  } catch (e) {
+    return false;
+  }
+  return text.includes("guardrails-kit: chained hook") &&
+    text.includes(`__gk_prev=${renderPrevHookPath(hookName, ref)}`);
+}
+
+/** Human-readable origin, for console output and the manifest. */
+function chainOriginLabel(detected) {
+  if (!detected.ref) return null;
+  return detected.ref.kind === "literal" ? detected.ref.dir : ".git/hooks";
+}
+
+/**
+ * The three cases where the user decides, not us. Common thread: we cannot
+ * write a shim that would be correct, so taking core.hooksPath would silence
+ * their hooks with nothing standing in for them.
+ */
+function explainUnsafeChain(detected) {
+  const head = "\n  ⚠ No toco 'core.hooksPath'. Esto es lo que encontré:";
+  const tail =
+    "\n\n     Los hooks del kit quedaron escritos en .husky/ pero git no los va a ejecutar\n" +
+    "     hasta que vos configures 'core.hooksPath'. Lo dejo en tus manos porque\n" +
+    "     configurarlo yo haría que git deje de mirar tu directorio actual, y tus\n" +
+    "     hooks dejarían de correr sin que nada avise.\n" +
+    "     Si querés seguir igual: git config core.hooksPath .husky";
+
+  if (detected.reason === "absolute") {
+    return (
+      `${head}\n     'core.hooksPath' ya apunta a '${detected.previous}', que es un path absoluto.\n` +
+      "     No puedo encadenarlo: el shim se commitea, y un path absoluto de tu máquina\n" +
+      "     no significa nada en la de otra persona del equipo." +
+      tail
+    );
+  }
+  if (detected.reason === "outside") {
+    return (
+      `${head}\n     'core.hooksPath' apunta a '${detected.previous}', que resuelve afuera del repo.\n` +
+      "     Mismo problema que con un path absoluto: no es algo que pueda quedar\n" +
+      "     commiteado y seguir siendo válido para el resto del equipo." +
+      tail
+    );
+  }
+  return (
+    `${head}\n     No pude leer el directorio de hooks anterior` +
+    (detected.dir ? ` (${rel(detected.dir)})` : "") +
+    ".\n     Sin poder ver qué hay ahí no puedo encadenarlo, y no voy a apagarlo a ciegas." +
+    tail
+  );
 }
 
 // El payload corre sobre Node, así que "¿está Node?" no se puede responder
@@ -390,6 +579,7 @@ install-guardrails
   --disable                                        Apagar el enforcement sin borrar nada (pide confirmación)
   --enable                                         Volver a encenderlo
   --dry-run                                        Con --uninstall/--disable/--enable: mostrar el plan y no tocar nada
+  --no-chain-hooks                                 No encadenar los git hooks que el proyecto ya tenia (por defecto si)
 
 Stacks soportados: ${Object.keys(STACKS).join(", ")}
 `);
@@ -511,12 +701,71 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
   }
 
   let hooksPathStatus = null;
+  let chained = null;
   if (installGitHooks) {
     console.log("\nGit hooks (generados según el/los stack(s)):");
-    writeText(path.join(TARGET_ROOT, ".husky/pre-commit"), buildPreCommit(stacks), { mode: 0o755 });
-    writeText(path.join(TARGET_ROOT, ".husky/pre-push"), buildPrePush(stacks), { mode: 0o755 });
 
-    hooksPathStatus = configureHooksPath(TARGET_ROOT);
+    // Detect BEFORE writing anything: the shim has to be part of the generated
+    // hook's content so the manifest hash covers it and --uninstall removes it.
+    chained = args.chainHooks === false ? { mode: "none", reason: "opted-out", hooks: [] } : detectPreviousHooks(TARGET_ROOT);
+
+    const ours = { "pre-commit": buildPreCommit(stacks), "pre-push": buildPrePush(stacks) };
+    let shimFailures = 0;
+
+    if (chained.mode === "chain") {
+      const origin = chainOriginLabel(chained);
+      console.log(`  → El proyecto ya tenía hooks en ${origin}. Los voy a encadenar en vez de silenciarlos.`);
+      for (const hook of chained.hooks) {
+        const shim = buildChainShim(hook, chained.ref, { duplicateStdin: HOOKS_WITH_STDIN.includes(hook) });
+        const dest = path.join(TARGET_ROOT, ".husky", hook);
+        let status;
+        if (Object.prototype.hasOwnProperty.call(ours, hook)) {
+          // One of the two we generate: the shim goes at the top of our hook.
+          status = writeText(dest, prependShim(ours[hook], shim), { mode: 0o755 });
+          delete ours[hook];
+        } else {
+          // A type we do not generate at all. Without a passthrough it simply
+          // stops running, with nothing to replace it.
+          status = writeText(dest, buildPassthroughHook(hook, chained.ref), { mode: 0o755 });
+        }
+        if (status === "skipped" && existingHookAlreadyChained(dest, hook, chained.ref)) {
+          // A reinstall over our own work. The .new is just G4 doing its job;
+          // the file that is actually there already chains the same origin.
+          console.log(`    ✓ ${hook} ya estaba encadenado (dejo el que hay; revisá el .new si querés el nuevo)`);
+          MANIFEST.git.shims.push(hook);
+        } else if (status === "skipped") {
+          // G4: we never overwrite. But a .new nobody merges is a hook that does
+          // not run, so this is a failure for chaining purposes, not a success.
+          shimFailures++;
+          console.log(`    ⚠ ${hook}: ya existía un .husky/${hook} sin el encadenamiento — queda pendiente que lo mergees.`);
+        } else {
+          console.log(`    ✓ ${hook} encadenado (corre primero el tuyo, y si falla se corta ahí)`);
+          MANIFEST.git.shims.push(hook);
+        }
+      }
+      MANIFEST.git.chainedFrom = origin;
+    }
+
+    // Whatever was not chained gets written plain.
+    Object.entries(ours).forEach(([hook, content]) =>
+      writeText(path.join(TARGET_ROOT, ".husky", hook), content, { mode: 0o755 })
+    );
+
+    if (chained.mode === "unsafe") {
+      // Taking core.hooksPath here would silence hooks we could not shim.
+      hooksPathStatus = "unsafe-skipped";
+      console.log(explainUnsafeChain(chained));
+    } else if (shimFailures) {
+      hooksPathStatus = "unsafe-skipped";
+      console.log(
+        `\n  ⚠ No configuro 'core.hooksPath' porque ${shimFailures} hook(s) no se pudieron encadenar.\n` +
+          "     Si lo configurara igual, git dejaría de mirar el directorio anterior y esos\n" +
+          "     hooks tuyos dejarían de correr sin avisar. Mergeá los .new de .husky/ y después\n" +
+          "     corré 'git config core.hooksPath .husky'."
+      );
+    } else {
+      hooksPathStatus = configureHooksPath(TARGET_ROOT);
+    }
     if (hooksPathStatus === "configured") {
       console.log("  ✓ git config core.hooksPath .husky (los hooks van a correr solos desde ahora)");
     } else if (hooksPathStatus === "failed") {
@@ -562,6 +811,8 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
     ? "  4. [listo] 'core.hooksPath' ya apunta a .husky — los hooks corren solos desde el próximo commit/push."
     : hooksPathStatus === "no-git"
     ? "  4. [obligatorio] Corré 'git init' y después 'git config core.hooksPath .husky' — sin esto los hooks generados no hacen nada."
+    : hooksPathStatus === "unsafe-skipped"
+    ? "  4. [decisión tuya] No configuré 'core.hooksPath' para no apagarte hooks tuyos que no pude encadenar — ver el detalle más arriba."
     : "  4. [obligatorio] Corré 'git config core.hooksPath .husky' a mano — no se pudo configurar automáticamente.";
 
   const ciStep = !installGitHooks

@@ -1522,6 +1522,449 @@ test("no engine code path reads a disable flag (G16)", () => {
   }
 });
 
+// --------------------------------------------------------------------------
+// Chaining the project's pre-existing git hooks (G12)
+//
+// Setting core.hooksPath to .husky/ does not make .husky win over the old hooks
+// directory — it makes git stop looking at the old one at all. These tests are
+// about the kit not silently killing a safeguard the project already had.
+// --------------------------------------------------------------------------
+
+const SHIM_MARK = "guardrails-kit: chained hook";
+
+function writeHook(dir, relPath, body) {
+  const p = path.join(dir, relPath);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, body);
+  fs.chmodSync(p, 0o755);
+  return p;
+}
+
+function gitConfigSet(dir, key, value) {
+  execFileSync("git", ["config", key, value], { cwd: dir });
+}
+
+function husky(dir, hook) {
+  return fs.readFileSync(path.join(dir, ".husky", hook), "utf8");
+}
+
+test("install chains an existing .git/hooks/pre-commit instead of silencing it", () => {
+  const dir = mkTmp("chain-precommit");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  writeHook(dir, ".git/hooks/pre-commit", "#!/bin/sh\necho PROJECT\n");
+
+  const out = runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  const hook = husky(dir, "pre-commit");
+  assert(hook.includes(SHIM_MARK), "pre-commit should carry a chain shim");
+  assert(/git rev-parse --git-common-dir/.test(hook), "an uncommitted hooks dir must be resolved at run time");
+  assert(/\[pre-commit\] Checking for secrets/.test(hook), "our own checks must still be there");
+  assert(hook.indexOf(SHIM_MARK) < hook.indexOf("Checking for secrets"), "the project's hook must run first");
+  assert(/encadenad/.test(out), "the installer should say it chained something");
+  assert(gitConfigGet(dir, "core.hooksPath") === ".husky", "hooksPath should still be taken");
+});
+
+test("install chains a hook type the kit does not generate", () => {
+  // commit-msg, post-merge, pre-rebase… have no generated replacement, so
+  // without a passthrough they simply stop running.
+  const dir = mkTmp("chain-commitmsg");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  writeHook(dir, ".git/hooks/commit-msg", "#!/bin/sh\necho PROJECT\n");
+
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  assert(exists(dir, ".husky/commit-msg"), "a passthrough should have been written");
+  const hook = husky(dir, "commit-msg");
+  assert(hook.includes(SHIM_MARK), "and it should chain the original");
+  assert(!/gitleaks|final_check/.test(hook), "a passthrough must add no checks of its own");
+});
+
+test("install chains from a previous core.hooksPath directory", () => {
+  const dir = mkTmp("chain-hookspath");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  writeHook(dir, ".githooks/pre-commit", "#!/bin/sh\necho PROJECT\n");
+  gitConfigSet(dir, "core.hooksPath", ".githooks");
+
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  const hook = husky(dir, "pre-commit");
+  assert(
+    hook.includes('__gk_prev=".githooks/pre-commit"'),
+    "committed config should be referenced verbatim, not resolved at run time"
+  );
+  assert(gitConfigGet(dir, "core.hooksPath") === ".husky", "hooksPath should be taken once chaining succeeded");
+});
+
+test("a chained pre-push replays stdin so both hooks see the refs", () => {
+  // git feeds pre-push the refs on stdin. Whoever reads it first consumes it,
+  // so the shim has to capture and replay it.
+  const dir = mkTmp("chain-prepush-stdin");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  writeHook(dir, ".git/hooks/pre-push", "#!/bin/sh\ncat\n");
+
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  const hook = husky(dir, "pre-push");
+  assert(/mktemp/.test(hook), "pre-push's shim must buffer stdin");
+  assert(/exec < "\$__gk_in"/.test(hook), "and hand it back to the rest of the hook");
+
+  const preCommitDir = mkTmp("chain-precommit-nostdin");
+  writeFixtureFiles(preCommitDir, STACK_MARKERS.node());
+  gitInit(preCommitDir);
+  writeHook(preCommitDir, ".git/hooks/pre-commit", "#!/bin/sh\nexit 0\n");
+  runInstall(preCommitDir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  assert(!/mktemp/.test(husky(preCommitDir, "pre-commit")), "pre-commit gets no stdin, so it needs no buffering");
+});
+
+test("chain shims forward arguments without mangling them", () => {
+  // ${1+"$@"} inside a JS template literal is a JS interpolation that evaluates
+  // to the string `1$@` — which shipped a hook that passed `1origin` as the
+  // first argument. Guard the emitted text, not the source.
+  const { buildChainShim } = require(path.join(KIT_ROOT, "generate.js"));
+  for (const opts of [{}, { duplicateStdin: true }]) {
+    const shim = buildChainShim("pre-push", { kind: "gitdir" }, opts);
+    assert(!/\b1\$@/.test(shim), `argument forwarding is mangled: ${shim}`);
+    assert(/\$\{1\+"\$@"\}/.test(shim), "arguments must be forwarded with the set -u safe idiom");
+  }
+});
+
+test("chain shims never contain an absolute path", () => {
+  // .husky/ is committed, so an absolute path from the installing machine would
+  // be meaningless for everyone else on the team.
+  const dir = mkTmp("chain-no-abs");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  writeHook(dir, ".git/hooks/pre-commit", "#!/bin/sh\nexit 0\n");
+  writeHook(dir, ".git/hooks/commit-msg", "#!/bin/sh\nexit 0\n");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+
+  for (const hook of fs.readdirSync(path.join(dir, ".husky"))) {
+    const lines = husky(dir, hook).split("\n").filter((l) => l.includes("__gk_prev="));
+    lines.forEach((l) => {
+      assert(!/=\s*"([A-Za-z]:|\/)/.test(l), `absolute path in ${hook}: ${l}`);
+    });
+  }
+});
+
+test("install skips .sample files when chaining", () => {
+  const dir = mkTmp("chain-samples");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  // git init already lays down *.sample; add one explicitly in case it did not.
+  writeHook(dir, ".git/hooks/pre-rebase.sample", "#!/bin/sh\nexit 1\n");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  assert(!exists(dir, ".husky/pre-rebase.sample"), "git never runs *.sample, so there is nothing to chain");
+  assert(!exists(dir, ".husky/pre-rebase"), "and it must not be chained under a stripped name either");
+  assert(!husky(dir, "pre-commit").includes(SHIM_MARK), "no real hooks existed, so nothing should be chained");
+});
+
+test("install skips non-executable hooks when chaining", () => {
+  if (process.platform === "win32") {
+    // Skipped with a reason, not silently: on Windows every file reports
+    // executable (measured in Git Bash), and git behaves the same way there —
+    // so there is no non-executable case to distinguish.
+    return;
+  }
+  const dir = mkTmp("chain-nonexec");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  const p = path.join(dir, ".git/hooks/pre-commit");
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, "#!/bin/sh\nexit 1\n");
+  fs.chmodSync(p, 0o644);
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  assert(
+    !husky(dir, "pre-commit").includes(SHIM_MARK),
+    "git skips non-executable hooks, so chaining one would break a commit that used to pass"
+  );
+});
+
+test("install refuses to take core.hooksPath when the previous one is absolute", () => {
+  const dir = mkTmp("chain-abs");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  const outside = mkTmp("chain-abs-hooks");
+  gitConfigSet(dir, "core.hooksPath", outside.replace(/\\/g, "/"));
+
+  const out = runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  assert(/No toco 'core\.hooksPath'/.test(out), "it must say it is leaving hooksPath alone");
+  assert(/absoluto/.test(out), "and why");
+  assert(/git config core\.hooksPath \.husky/.test(out), "and give the exact command to override");
+  assert(
+    gitConfigGet(dir, "core.hooksPath") !== ".husky",
+    "taking hooksPath here would silence hooks we could not shim"
+  );
+  assert(exists(dir, ".husky/pre-commit"), "the hooks themselves are still written");
+});
+
+test("install refuses to take core.hooksPath when the previous one is outside the repo", () => {
+  const dir = mkTmp("chain-outside");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  gitConfigSet(dir, "core.hooksPath", "../elsewhere/hooks");
+
+  const out = runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  assert(/afuera del repo/.test(out), "it must name the problem");
+  assert(gitConfigGet(dir, "core.hooksPath") === "../elsewhere/hooks", "the previous value must be untouched");
+});
+
+test("--no-chain-hooks keeps the old behavior", () => {
+  const dir = mkTmp("chain-optout");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  writeHook(dir, ".git/hooks/pre-commit", "#!/bin/sh\nexit 0\n");
+  runInstall(dir, [
+    "--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--no-chain-hooks", "--yes",
+  ]);
+  assert(!husky(dir, "pre-commit").includes(SHIM_MARK), "--no-chain-hooks means no shim");
+  assert(gitConfigGet(dir, "core.hooksPath") === ".husky", "and hooksPath is taken as before");
+});
+
+test("reinstall re-chains the original directory instead of chaining .husky to itself", () => {
+  // On a reinstall core.hooksPath is already .husky — ours. Reading that as "the
+  // value to go back to" would point --uninstall at a .husky/ it just deleted,
+  // and would drop the chaining the first install set up.
+  const dir = mkTmp("chain-reinstall");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  writeHook(dir, ".git/hooks/pre-commit", "#!/bin/sh\nexit 0\n");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+
+  const out = runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".agent-security/install-manifest.json"), "utf8"));
+  assert(
+    manifest.git.hooksPathBefore === null,
+    `hooksPathBefore must stay the project's original value, got ${JSON.stringify(manifest.git.hooksPathBefore)}`
+  );
+  assert(!/\.husky\/pre-commit"/.test(husky(dir, "pre-commit")), "a shim must never point at .husky itself");
+  assert(/ya estaba encadenado/.test(out), "re-chaining our own work is not a failure");
+  assert(gitConfigGet(dir, "core.hooksPath") === ".husky", "and hooksPath stays taken");
+});
+
+test("install does not chain when the project had no hooks", () => {
+  const dir = mkTmp("chain-nothing");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  assert(!husky(dir, "pre-commit").includes(SHIM_MARK), "nothing to chain means no shim");
+  assert(!husky(dir, "pre-push").includes(SHIM_MARK), "nothing to chain means no shim");
+  assertDeep(fs.readdirSync(path.join(dir, ".husky")).sort(), ["pre-commit", "pre-push"], ".husky contents");
+});
+
+test("manifest records the chained directory and every shim", () => {
+  const dir = mkTmp("chain-manifest");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  writeHook(dir, ".githooks/pre-commit", "#!/bin/sh\nexit 0\n");
+  writeHook(dir, ".githooks/commit-msg", "#!/bin/sh\nexit 0\n");
+  gitConfigSet(dir, "core.hooksPath", ".githooks");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".agent-security/install-manifest.json"), "utf8"));
+  assert(manifest.git.chainedFrom === ".githooks", `chainedFrom: got ${manifest.git.chainedFrom}`);
+  assertDeep(manifest.git.shims.slice().sort(), ["commit-msg", "pre-commit"], "recorded shims");
+  assert(manifest.git.hooksPathBefore === ".githooks", "the value to restore on uninstall");
+});
+
+test("uninstall removes the chained shims and restores the previous hooksPath", () => {
+  const dir = mkTmp("chain-uninstall");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  writeHook(dir, ".githooks/pre-commit", "#!/bin/sh\nexit 0\n");
+  writeHook(dir, ".githooks/commit-msg", "#!/bin/sh\nexit 0\n");
+  gitConfigSet(dir, "core.hooksPath", ".githooks");
+  const before = snapshot(dir);
+
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  assert(exists(dir, ".husky/commit-msg"), "the passthrough should exist before uninstalling");
+
+  const r = runUninstall(dir, ["--yes"]);
+  assert(r.code === 0, `uninstall should exit 0, got ${r.code}:\n${r.out}`);
+  assert(snapshot(dir) === before, `a chained install must also uninstall clean:\n${r.out}`);
+  assert(gitConfigGet(dir, "core.hooksPath") === ".githooks", "the project's own hooks directory must come back");
+});
+
+// --------------------------------------------------------------------------
+// The kit never commits (G17)
+//
+// The target repository's history belongs to the client, not to the installer.
+// The kit may READ git state and it may set core.hooksPath (that is the whole
+// point of G12), but it must never stage, commit, push, tag, or move anyone's
+// work. Nor may anything it generates do so on its behalf.
+//
+// This is checked at invocation sites and in generated content, not by grepping
+// for words: the sources legitimately contain "git push --force" and
+// "git commit --no-verify" as blocked-command patterns and as test fixtures.
+// A text search would either miss real calls or flag the rules themselves.
+// --------------------------------------------------------------------------
+
+// Anything that stages, records, moves, or publishes work. `clone` is absent on
+// purpose: bootstrap.sh clones the KIT into a temp dir of its own, which touches
+// nothing of the user's.
+const HISTORY_MUTATING = [
+  "add", "commit", "push", "checkout", "switch", "restore", "reset", "revert",
+  "cherry-pick", "merge", "rebase", "stash", "rm", "mv", "tag", "branch",
+  "apply", "am", "clean", "gc", "prune", "filter-branch", "update-ref",
+];
+
+// Read-only, plus the one write the kit is explicitly contracted to make.
+const ALLOWED = ["config", "rev-parse", "remote", "status", "log", "show", "diff", "ls-files", "worktree"];
+
+function gitCallsIn(source) {
+  const calls = [];
+  // Look only at what is handed to a process-spawning call. Everything else in
+  // the file is prose, a policy pattern, or a message telling the USER to run
+  // something — none of which the kit executes.
+  const spawn = /\b(?:execSync|execFileSync|exec|spawnSync|spawn)\s*\(/g;
+  let m;
+  while ((m = spawn.exec(source)) !== null) {
+    const window = source.slice(m.index, m.index + 400);
+    // `execFileSync("git", ["config", ...])` and `execSync("git config ...")`
+    const asFile = /["'`]git["'`]\s*,\s*\[\s*["'`]([a-z-]+)["'`]/.exec(window);
+    if (asFile) calls.push(asFile[1]);
+    let inline;
+    const inlineRe = /["'`]\s*git\s+([a-z-]+)/g;
+    while ((inline = inlineRe.exec(window)) !== null) calls.push(inline[1]);
+  }
+  return calls;
+}
+
+test("nothing the kit runs mutates the target repository's history (G17)", () => {
+  const sources = [
+    "install.js", "generate.js", "stacks.js", "docs.js",
+    "templates/common/kit_manifest.js",
+    "templates/common/uninstall.js",
+    "templates/common/toggle.js",
+    "templates/common/policy_engine.js",
+    "templates/common/policy_loader.js",
+    "templates/common/final_check.js",
+    "templates/claude-code/hooks/pretooluse.js",
+    "templates/vscode-codex/hooks/pretooluse.js",
+    "templates/antigravity/scripts/pretooluse.js",
+  ];
+  for (const rel of sources) {
+    const p = path.join(KIT_ROOT, rel);
+    if (!fs.existsSync(p)) throw new Error(`${rel} is missing — update this test's file list`);
+    for (const sub of gitCallsIn(fs.readFileSync(p, "utf8"))) {
+      assert(
+        !HISTORY_MUTATING.includes(sub),
+        `${rel} invokes 'git ${sub}'. The target repo's history belongs to the client (G17).`
+      );
+      assert(
+        ALLOWED.includes(sub),
+        `${rel} invokes 'git ${sub}', which is neither a known read nor the contracted ` +
+          `core.hooksPath write. Add it to ALLOWED here only after deciding it is safe.`
+      );
+    }
+  }
+});
+
+test("bootstrap.sh only clones the kit, never touches the target's history (G17)", () => {
+  const p = path.join(KIT_ROOT, "bootstrap.sh");
+  if (!fs.existsSync(p)) return; // optional entry point
+  const lines = fs.readFileSync(p, "utf8").split("\n");
+  lines.forEach((line, i) => {
+    if (line.trim().startsWith("#")) return;
+    const m = /(?:^|[;&|(]|\s)git\s+([a-z-]+)/.exec(line);
+    if (!m) return;
+    assert(
+      !HISTORY_MUTATING.includes(m[1]),
+      `bootstrap.sh:${i + 1} runs 'git ${m[1]}' — it may only clone the kit itself (G17): ${line.trim()}`
+    );
+  });
+});
+
+test("generated hooks and CI never commit, stage, or push on the user's behalf (G17)", () => {
+  // A hook that committed for you would be worse than the installer doing it:
+  // it would keep doing it, on every commit, in everyone's clone.
+  const { buildPreCommit, buildPrePush, buildCiWorkflow, buildGitlabCiYaml } = require(
+    path.join(KIT_ROOT, "generate.js")
+  );
+  const generated = {
+    "pre-commit": buildPreCommit(["node"]),
+    "pre-push": buildPrePush(["node"]),
+    "github CI": buildCiWorkflow(["node"]),
+    "gitlab CI": buildGitlabCiYaml(["node"]),
+  };
+  for (const [what, text] of Object.entries(generated)) {
+    for (const line of text.split("\n")) {
+      if (line.trim().startsWith("#")) continue; // explanatory comments
+      const m = /(?:^|[;&|(]|\s)git\s+([a-z-]+)/.exec(line);
+      if (!m) continue;
+      assert(
+        !HISTORY_MUTATING.includes(m[1]),
+        `generated ${what} runs 'git ${m[1]}' (G17): ${line.trim()}`
+      );
+    }
+  }
+});
+
+test("a real install leaves the target's git history and index untouched (G17)", () => {
+  // The end-to-end version of the same claim: install into a repo with a commit
+  // and a dirty working tree, then check nothing moved.
+  const dir = mkTmp("g17-endtoend");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  execFileSync("git", ["config", "user.email", "t@example.com"], { cwd: dir });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: dir });
+  execFileSync("git", ["add", "package.json"], { cwd: dir });
+  execFileSync("git", ["commit", "-qm", "initial"], { cwd: dir });
+
+  // Something staged and something unstaged, so we would notice either being
+  // swept into a commit.
+  fs.writeFileSync(path.join(dir, "staged.txt"), "staged\n");
+  execFileSync("git", ["add", "staged.txt"], { cwd: dir });
+  fs.writeFileSync(path.join(dir, "dirty.txt"), "dirty\n");
+
+  const headBefore = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+  const countBefore = execFileSync("git", ["rev-list", "--count", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+  const stagedBefore = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: dir, encoding: "utf8" }).trim();
+
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+
+  assert(
+    execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim() === headBefore,
+    "the installer moved HEAD"
+  );
+  assert(
+    execFileSync("git", ["rev-list", "--count", "HEAD"], { cwd: dir, encoding: "utf8" }).trim() === countBefore,
+    "the installer created a commit"
+  );
+  assert(
+    execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: dir, encoding: "utf8" }).trim() === stagedBefore,
+    "the installer changed what was staged"
+  );
+  assert(fs.readFileSync(path.join(dir, "dirty.txt"), "utf8") === "dirty\n", "the installer touched the working tree");
+  // Everything it wrote should be sitting there untracked, for the client to
+  // review and commit themselves.
+  const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard"], {
+    cwd: dir,
+    encoding: "utf8",
+  });
+  assert(/\.agent-security\//.test(untracked), "the kit's files should be left untracked, not staged");
+});
+
+test("uninstall and disable leave the target's git history untouched (G17)", () => {
+  const dir = mkTmp("g17-uninstall");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  execFileSync("git", ["config", "user.email", "t@example.com"], { cwd: dir });
+  execFileSync("git", ["config", "user.name", "t"], { cwd: dir });
+  execFileSync("git", ["add", "package.json"], { cwd: dir });
+  execFileSync("git", ["commit", "-qm", "initial"], { cwd: dir });
+  const headBefore = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  runToggle(dir, ["--disable", "--yes"]);
+  runToggle(dir, ["--enable"]);
+  runUninstall(dir, ["--yes"]);
+
+  assert(
+    execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim() === headBefore,
+    "removing the kit must not touch history either"
+  );
+});
+
 test("package.json still declares no dependencies (G1)", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(KIT_ROOT, "package.json"), "utf8"));
   const deps = Object.keys(pkg.dependencies || {});

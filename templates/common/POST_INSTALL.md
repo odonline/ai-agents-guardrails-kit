@@ -68,6 +68,35 @@ and its summary tells you which of these happened:
 - **`[required]`, config failed** — same fix, run it manually; the
   installer will tell you it couldn't do it automatically (unusual — a
   permissions issue is the most likely cause).
+- **`[your call]`** — the installer found hooks it could not safely chain
+  (see below) and deliberately left `core.hooksPath` alone rather than
+  silence them. It printed what it found and the exact command to run if
+  you want to proceed anyway.
+
+### What happened to the hooks you already had
+
+Pointing `core.hooksPath` at `.husky/` does not make `.husky` win over
+the previous hooks directory — it makes git stop looking at that
+directory completely. Anything you had in `.git/hooks/` (put there by
+Python's `pre-commit`, husky v4, lefthook, or an IDE) or in your own
+`core.hooksPath` directory would stop running, and hook types this kit
+does not generate — `commit-msg`, `post-merge`, `pre-rebase` — would have
+had nothing to replace them.
+
+So the installer **chains** them instead. For every hook it found in the
+previously-effective directory (skipping `*.sample`, which git never
+runs) `.husky/` gets a shim that runs your original first and keeps its
+exit code: if yours fails, the operation stops there and ours never
+runs. The block is marked `>>> guardrails-kit: chained hook >>>` and
+explains itself in a comment. Delete it to stop chaining; the
+uninstaller removes it too.
+
+When chaining cannot be done safely — a previous `core.hooksPath` that is
+absolute or resolves outside the repo, a directory that cannot be read,
+or a `.husky/<hook>` the installer did not write — it does not configure
+`core.hooksPath` at all. The guardrails stay inactive until you decide,
+which is the honest trade: better inactive-and-said-so than silently
+disabling a safeguard you already had.
 
 Either way, remember these are a **convenience layer**, not the
 enforcement layer: anyone can bypass them with `--no-verify` (which the

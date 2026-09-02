@@ -96,6 +96,60 @@ node install.js --target /tmp/test --agents claude-code --stacks node --yes
 node /tmp/test/.agent-security/test_policy_engine.js
 ```
 
+## Tocar los git hooks generados o el encadenamiento
+
+Dos trampas verificadas en este repo, las dos silenciosas:
+
+- **`git rev-parse --git-path hooks` respeta `core.hooksPath`.** En un proyecto
+  con el kit instalado devuelve `.husky`, así que un shim que lo use se llama a
+  sí mismo. Usá `"$(git rev-parse --git-common-dir)/hooks"`, que es inmune y
+  además resuelve bien en un worktree enlazado (ahí `--git-dir` apunta a
+  `.git/worktrees/<name>`, que no es donde viven los hooks).
+- **Los shims se generan desde template literals de JS.** Una expansión de shell
+  con la forma `${...}` dentro de un backtick **no** llega al shell: JS la
+  interpola primero. `${1+"$@"}` se evaluaba como `1 + "$@"` y el archivo quedaba
+  con `1$@`. Toda expansión que tenga que llegar al shell va escapada
+  (`\${...}`), y el test `chain shims forward arguments without mangling them`
+  revisa el **texto emitido**, no el fuente. Si agregás sintaxis de shell nueva a
+  un builder, testeá la salida.
+
+Además: el contenido de `.husky/` se **commitea** en el proyecto destino, así que
+nada de paths absolutos adentro de un shim, y todo path se chequea antes de
+invocarse (otro dev puede no tener ese hook). `sh` POSIX, sin flags GNU de
+`mktemp`, sin `[[ ]]` — corre en Git Bash también (G10).
+
+Y la regla que ordena todo esto: **si no se pueden escribir los shims, no se
+configura `core.hooksPath`.** Configurarlo igual apagaría hooks del proyecto sin
+nada que los reemplace, que es el bug que el encadenamiento existe para arreglar.
+
+## El kit nunca commitea (G17)
+
+La historia del repo destino es del cliente. Nada del kit —ni `install.js`, ni el
+desinstalador, ni el toggle, ni **nada que el kit genere**— puede correr
+`git add`, `commit`, `push`, `checkout`, `reset`, `merge`, `rebase`, `stash`,
+`tag` ni `branch`.
+
+Lo único que el kit escribe en git es **una** pieza de config: `core.hooksPath`
+(G12), que además registra en el manifest y revierte al desinstalar. Todo lo
+demás que escribe queda **sin trackear**, para que el cliente lo revise y lo
+commitee él.
+
+El caso que se olvida: un hook generado que staggee o commitee por vos sería peor
+que el instalador haciéndolo una vez — lo haría en cada commit, en el clone de
+cada persona del equipo. Por eso hay un test que revisa el **contenido generado**
+(`pre-commit`, `pre-push`, los dos formatos de CI) además de los sitios de
+invocación.
+
+Los tests no buscan texto: el fuente contiene `git push --force` y
+`git commit --no-verify` legítimamente, como patrones de `blocked_commands` y como
+fixtures. Buscan qué se le pasa a `execSync`/`execFileSync`/`spawnSync`, y hay
+además un test end-to-end que instala sobre un repo con un commit y un working
+tree sucio y verifica que `HEAD`, el index y los archivos sin commitear quedaron
+igual.
+
+Si necesitás una operación de git nueva, va a la lista `ALLOWED` de ese test — y
+sólo después de decidir explícitamente que es segura.
+
 ## Tocar el manifest, el desinstalador o el toggle
 
 `install.js` registra en `.agent-security/install-manifest.json` todo lo que
