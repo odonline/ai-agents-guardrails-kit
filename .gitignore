@@ -8,3 +8,4 @@ Tasks/
 
 # Artefactos de pruebas locales del kit
 /tmp-test-*
+/node-kit

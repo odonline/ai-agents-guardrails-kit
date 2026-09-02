@@ -78,10 +78,20 @@ clone (`https://github.com/...` vs `https://gitlab.com/...` vs
 .agent-security/
 ├── policy.yaml           # generado según el stack detectado — es la única
 │                          # fuente de verdad para las reglas
-├── policy_engine.py       # motor de evaluación, agnóstico al lenguaje
-├── final_check.py         # completion gate: re-ejecuta los checks, no
+├── policy_engine.js       # motor de evaluación, agnóstico al lenguaje
+├── policy_loader.js       # lee y valida policy.yaml; falla cerrado
+├── final_check.js         # completion gate: re-ejecuta los checks, no
 │                          # confía en que el agente diga "tests OK"
-├── test_policy_engine.py  # pytest suite
+├── test_policy_engine.js  # suite propia, sin runner que instalar
+├── vendor/                # js-yaml vendorizado (ver vendor/VENDOR.md)
+├── toggle.js              # --disable / --enable: apaga el enforcement
+│                          # sin borrar nada, y lo vuelve a encender
+├── uninstall.js           # saca el kit; muestra el plan y pregunta
+├── kit_manifest.js        # compartido por los dos: lee el manifest y
+│                          # decide qué archivos siguen siendo nuestros
+├── install-manifest.json  # qué escribió el instalador y qué estado
+│                          # cambió fuera de estos archivos. No borrarlo:
+│                          # es lo que hace que desinstalar sea preciso
 └── POST_INSTALL.md        # explica cada paso del resumen final del
                             # instalador (qué es, por qué, qué pasa si te
                             # lo salteás)
@@ -97,8 +107,49 @@ clone (`https://github.com/...` vs `https://gitlab.com/...` vs
                                         # el remote 'origin', nunca ambos
 AGENTS.md, CLAUDE.md, GEMINI.md        # contrato operativo (no es
                                         # control de seguridad, eso es
-                                        # policy_engine.py)
+                                        # policy_engine.js)
 ```
+
+## Apagarlo o sacarlo
+
+Un kit que sabe entrar y no sabe salir es un kit que nadie prueba, porque
+probarlo es irreversible en la práctica. Las dos operaciones se instalan junto
+con el resto y funcionan **offline, sin el kit** — importa, porque
+`bootstrap.sh` borra su propio clone al terminar.
+
+```bash
+node .agent-security/toggle.js --disable    # apaga el enforcement, no borra nada
+```
+
+```bash
+node .agent-security/uninstall.js           # lo saca del proyecto
+```
+
+Las dos muestran el plan completo antes de tocar algo y piden confirmación
+(`--dry-run` termina en el plan; `--yes` saltea la pregunta). También se llegan
+desde el instalador: `node install.js --disable|--enable|--uninstall --target <dir>`
+delega en el script instalado, así la lógica tiene un solo lugar donde vive.
+
+La regla que siguen las dos, y es la que importa: **sacan lo que puso el
+instalador, nunca lo que vos editaste.** Un archivo se borra sólo si el manifest
+lo registró *y* su contenido sigue coincidiendo con lo que se escribió. Un
+`policy.yaml` que ajustaste, o un `settings.json` que mergeaste a mano,
+se conserva y se reporta.
+
+Consecuencia asumida: una desinstalación puede terminar **incompleta a
+propósito**. El resumen lo dice en una línea imposible de perderse — si algún
+hook config quedó enganchado, lo nombra, porque hasta que lo saques cada tool
+call va a ejecutar un hook que apunta a un `.agent-security/` que ya no existe y
+los adapters van a responder `deny`. Falla cerrado: te deniega todo, no te
+permite todo.
+
+**Desactivar es desenganchar, no un flag.** No existe ningún `enabled: false`
+que lea el *motor*: eso sería agregarle un camino cuyo trabajo es devolver
+`allow` para todo, adentro de la única pieza que existe para fallar cerrada — y
+un solo archivo que un agente podría intentar crear para liberarse solo.
+`--disable` renombra la config de hooks de cada harness
+(`settings.json` → `settings.json.disabled`) y devuelve `core.hooksPath` a lo que
+era. Es subtractivo, y se ve en `git status`.
 
 ## Stacks soportados
 
@@ -110,7 +161,7 @@ Python. Agregar uno nuevo es un solo bloque en `stacks.js` — ver
 
 **[`RULES.md`](./RULES.md)** — cada comando bloqueado, cada ruta protegida,
 cada check por stack, con su motivo. Se genera con `node docs.js`
-directamente desde `generate.js`/`stacks.js`/`policy_engine.py`, así que
+directamente desde `generate.js`/`stacks.js`/`policy_engine.js`, así que
 nunca queda desactualizado respecto a lo que el instalador realmente hace
 (CI lo verifica).
 
@@ -130,7 +181,7 @@ Copilot-style hooks), Antigravity.
 - `templates/` — archivos que se copian tal cual (motor de políticas,
   adapters por harness, contrato AGENTS.md).
 
-El motor (`policy_engine.py`) nunca cambia por lenguaje del proyecto; opera
+El motor (`policy_engine.js`) nunca cambia por lenguaje del proyecto; opera
 sobre texto de comando y rutas de archivo, no sobre sintaxis de ningún
 lenguaje en particular.
 

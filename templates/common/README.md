@@ -12,9 +12,20 @@ Shared, audited policy engine used by every agent hook in this repo
 ```
 .agent-security/
 ├── policy.yaml              # single source of truth for rules
-├── policy_engine.py         # evaluate(tool_name, tool_input) -> Decision
-├── final_check.py           # evidence-based completion gate
-├── test_policy_engine.py    # pytest suite
+├── policy_engine.js         # evaluate(toolName, toolInput) -> Decision
+├── policy_loader.js         # reads + validates policy.yaml, fails closed
+├── final_check.js           # evidence-based completion gate
+├── test_policy_engine.js    # test suite (no runner to install)
+├── vendor/                  # js-yaml, vendored verbatim (see vendor/VENDOR.md)
+├── toggle.js                # --disable / --enable: turns enforcement off and
+│                            # back on without deleting anything
+├── uninstall.js             # removes the kit; shows a plan first and asks
+├── kit_manifest.js          # shared by toggle.js and uninstall.js: reads the
+│                            # manifest and decides which files are still ours
+├── install-manifest.json    # what the installer wrote + what it changed
+│                            # outside these files. Do not delete: the
+│                            # uninstaller needs it to know what is safe
+│                            # to remove and what is yours.
 ├── audit.log                # every decision, appended (gitignored)
 └── completion_reports.log   # every Stop-gate result, appended (gitignored)
 ```
@@ -24,21 +35,87 @@ Shared, audited policy engine used by every agent hook in this repo
 Each harness has a thin **adapter** that only knows how to parse that
 harness's JSON and print that harness's JSON back. All actual logic
 (protected paths, blocked commands, symlink/escape checks, default-deny)
-lives in `policy_engine.py` so there is exactly one place to audit and test.
+lives in `policy_engine.js` so there is exactly one place to audit and test.
 
-- Claude Code   → `.claude/hooks/pretooluse.py`
-- VS Code/Codex → `.github/hooks/pretooluse.py`
-- Antigravity   → `.agents/scripts/pretooluse.py`
+- Claude Code   → `.claude/hooks/pretooluse.js`
+- VS Code/Codex → `.github/hooks/pretooluse.js`
+- Antigravity   → `.agents/scripts/pretooluse.js`
+
+Everything here runs on Node (>= 16). There is nothing to install: the one
+third-party dependency (js-yaml, for reading `policy.yaml`) ships vendored
+as a single file you can read and checksum — see `vendor/VENDOR.md`.
 
 ## Editing the policy
 
 1. Edit `policy.yaml`.
-2. Run `python -m pytest .agent-security/test_policy_engine.py`.
+2. Run `node .agent-security/test_policy_engine.js`. The engine refuses to
+   run on a policy file it cannot fully parse — a malformed pattern or a
+   bad action value is an error at load time, not a rule that silently
+   stops applying — so this catches a typo before it becomes a gap.
 3. This directory is itself protected: any agent trying to edit files under
    `.agent-security/**` gets an automatic `ask` decision (see
-   `policy_engine.py`'s self-protection block). Changes should go through a
+   `policy_engine.js`'s self-protection block). Changes should go through a
    human-reviewed PR, not an agent edit in the same session it's trying to
    bypass.
+
+## Turning it off for a while
+
+```bash
+node .agent-security/toggle.js --disable
+```
+
+Nothing is deleted. Your `policy.yaml`, the adapters and `.husky/` all stay
+exactly where they are; what changes is that the harness stops calling them —
+each harness's hook config is renamed out of the way
+(`settings.json` → `settings.json.disabled`) and `core.hooksPath` goes back to
+whatever it was before the install. To turn it back on:
+
+```bash
+node .agent-security/toggle.js --enable
+```
+
+A `--disable`/`--enable` round trip returns the config byte-for-byte. `--dry-run`
+shows the plan and stops; `--yes` skips the confirmation on `--disable`
+(re-enabling never asks — turning protection back on needs no gate).
+
+Two things worth knowing:
+
+- For Claude Code, `settings.json` also holds the `permissions` deny/ask lists,
+  which Claude Code itself applies. Disabling the file turns those off too.
+  "Disabled" means disabled.
+- If you merged a `.new` into your own hook config by hand, that file holds your
+  settings *and* ours. Renaming it would carry yours away, so it is left alone
+  and reported — you take out the hook blocks yourself. For Antigravity,
+  `"enabled": false` in `.agents/hooks.json` is enough.
+
+**Why a rename and not an `enabled: false` flag?** Because that flag would have
+to be read by the *engine* — a code path whose only job is to return `allow` for
+everything, inside the one component that exists to fail closed. It would also be
+a single file an agent could try to create to free itself, and it would be
+invisible in a code review. A rename is subtractive and shows up in
+`git status`.
+
+## Removing the kit
+
+```bash
+node .agent-security/uninstall.js
+```
+
+It prints a plan first — what it will delete, what it will keep and why, what
+happens to `core.hooksPath` and `.gitignore` — and asks before doing anything.
+`--dry-run` stops after the plan; `--yes` skips the confirmation.
+
+The rule it follows: **it removes what the installer put there, and never
+touches what you edited.** A file is deleted only if the manifest recorded it
+*and* its content still matches what was written. So a `policy.yaml` you tuned,
+or a `settings.json` you merged by hand, is kept and reported rather than
+deleted.
+
+That means an uninstall can end deliberately incomplete. If a hook config still
+has our blocks in it, the summary says so explicitly — because until you remove
+them, every tool call runs a hook pointing at an `.agent-security/` that no
+longer exists, and the adapters answer `deny`. It fails closed, so you get
+everything denied rather than everything allowed.
 
 ## `.gitignore` does not protect anything here
 
@@ -76,7 +153,7 @@ evaluation:
    `.agentsignore`, `.aiignore`, `.aiderignore`, `.clineignore`,
    `.windsurfignore`, `.continueignore`, `.copilotignore`,
    `.codeiumignore`, `.geminiignore` (see `KNOWN_IGNORE_FILES` in
-   `policy_engine.py` — there's no shared spec across vendors, so this list
+   `policy_engine.js` — there's no shared spec across vendors, so this list
    grows as tools adopt the convention).
 
 Since (2) is read live (cached by mtime, not baked in at install time),

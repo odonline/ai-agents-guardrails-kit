@@ -13,19 +13,15 @@ const path = require("path");
 const { STACKS } = require("./stacks");
 const { CORE_BLOCKED_COMMANDS, CORE_PROTECTED_PATHS } = require("./generate");
 
-// KNOWN_IGNORE_FILES lives in ONE place — templates/common/policy_engine.py
-// (it's the file that actually enforces it at runtime). Parse it out of
-// there instead of keeping a second copy in JS that could drift.
-function readKnownIgnoreFiles() {
-  const src = fs.readFileSync(
-    path.join(__dirname, "templates/common/policy_engine.py"),
-    "utf8"
-  );
-  const match = src.match(/KNOWN_IGNORE_FILES\s*=\s*\[([\s\S]*?)\]/);
-  if (!match) throw new Error("No pude encontrar KNOWN_IGNORE_FILES en policy_engine.py");
-  return [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+// KNOWN_IGNORE_FILES lives in ONE place — templates/common/policy_engine.js
+// (the file that actually enforces it at runtime). Now that the engine is
+// Node, require it and read the exported constant instead of regexing the
+// source: if the engine is ever renamed or the export removed, this throws
+// and CI fails, which is the intended behavior (G5).
+const { KNOWN_IGNORE_FILES } = require("./templates/common/policy_engine.js");
+if (!Array.isArray(KNOWN_IGNORE_FILES) || KNOWN_IGNORE_FILES.length === 0) {
+  throw new Error("policy_engine.js no exporta KNOWN_IGNORE_FILES");
 }
-const KNOWN_IGNORE_FILES = readKnownIgnoreFiles();
 
 function table(headers, rows) {
   const head = `| ${headers.join(" | ")} |`;

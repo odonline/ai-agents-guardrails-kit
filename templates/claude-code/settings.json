@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/pretooluse.py",
+            "command": "node .claude/hooks/pretooluse.js",
             "timeout": 5
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .agent-security/final_check.py --post-tool-use",
+            "command": "node .agent-security/final_check.js --post-tool-use",
             "timeout": 30
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .agent-security/final_check.py",
+            "command": "node .agent-security/final_check.js",
             "timeout": 60
           }
         ]

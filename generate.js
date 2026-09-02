@@ -118,7 +118,7 @@ set -euo pipefail
 ${renderShellChecks(stacks)}
 
 echo "[pre-push] Completion gate..."
-python3 .agent-security/final_check.py
+node .agent-security/final_check.js
 `;
 }
 
@@ -152,15 +152,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      # The policy engine runs on Node and vendors its only dependency, so
+      # there is nothing to install before testing it.
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
-
-      - name: Install policy engine deps
-        run: pip install pyyaml pytest --break-system-packages
+          node-version: 20
 
       - name: Test policy engine
-        run: pytest .agent-security/test_policy_engine.py
+        run: node .agent-security/test_policy_engine.js
 
 ${setupSteps || "      # No stack detected at install time — add your language's setup step here."}
 
@@ -196,10 +195,11 @@ stages:
 
 policy-engine-test:
   stage: test
-  image: python:3.12-slim
+  # The policy engine runs on Node and vendors its only dependency, so this job
+  # needs nothing beyond a Node image.
+  image: node:20
   script:
-    - pip install pyyaml pytest --break-system-packages
-    - pytest .agent-security/test_policy_engine.py
+    - node .agent-security/test_policy_engine.js
 
 ${stackJobs || "# No stack detected at install time — add your language's job here.\n"}
 secret-scan:

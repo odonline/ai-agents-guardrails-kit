@@ -9,9 +9,9 @@ stages:
 self-test:
   stage: test
   image: node:20
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq python3-pip
-    - pip install pyyaml pytest --break-system-packages -q
+  # No before_script: the payload has nothing to install. The policy engine
+  # runs on Node and vendors its only dependency (js-yaml), so node:20 already
+  # has everything both the kit and the installed payload need.
   script:
     - |
       set -e
@@ -37,5 +37,5 @@ self-test:
           python) touch /tmp/fixture-$stack/pyproject.toml ;;
         esac
         node install.js --target /tmp/fixture-$stack --agents claude-code --stacks $stack --git-hooks true --yes
-        python3 -m pytest /tmp/fixture-$stack/.agent-security/test_policy_engine.py -q
+        node /tmp/fixture-$stack/.agent-security/test_policy_engine.js
       done

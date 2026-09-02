@@ -1,7 +1,7 @@
 # Agent operating contract
 
 > This file explains expectations. It is **not** a security boundary — the
-> real enforcement lives in `.agent-security/policy_engine.py` and the
+> real enforcement lives in `.agent-security/policy_engine.js` and the
 > `PreToolUse` hooks. If this file and the hooks ever disagree, the hooks win.
 
 ## Before editing

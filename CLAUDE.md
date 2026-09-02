@@ -12,13 +12,21 @@ target project. Don't confuse `templates/common/CLAUDE.md`,
 that gets copied into installed projects; they are not instructions for
 working in this repo.
 
-Two languages, two roles:
-- **JS** (`install.js`, `stacks.js`, `generate.js`, `docs.js`) — the
+One language, two roles — both JavaScript, and the distinction that
+matters is *when* each runs, not what it is written in:
+- **Kit-side** (`install.js`, `stacks.js`, `generate.js`, `docs.js`) — the
   installer/generator that runs once, on the developer's machine, to
-  scaffold a target project. No external dependencies.
-- **Python** (`templates/common/policy_engine.py`, `final_check.py`) —
-  the actual runtime enforcement logic that ships into target projects
-  and runs on every agent tool call there. Never changes per stack.
+  scaffold a target project. Zero dependencies.
+- **Payload** (`templates/common/policy_engine.js`, `policy_loader.js`,
+  `final_check.js`) — the actual runtime enforcement logic that ships into
+  target projects and runs on every agent tool call there. Never changes
+  per stack. Its one third-party dependency, js-yaml, is **vendored** in
+  `templates/common/vendor/` so no target project ever runs `npm install`
+  to get guardrails.
+
+The runtime used to be Python; it was ported to Node (see
+`Tasks/policy-engine-node-port/`). Nothing in the payload requires pip, a
+virtualenv, or pytest any more — only `node` on the `PATH`.
 
 ## Commands
 
@@ -35,18 +43,23 @@ directory (never against this repo itself):
 node install.js --target /tmp/some-test-dir --agents claude-code --stacks node --git-hooks true --ci github --yes
 ```
 
-There is no Python test runner wired into `npm test` — the Python side
-(`policy_engine.py`) is tested via `.agent-security/test_policy_engine.py`,
-which only exists *after* installing into a target directory:
+The payload has its own suite, `templates/common/test_policy_engine.js`.
+It is pure, so it runs straight from the kit:
 
 ```bash
-python3 -m pytest /tmp/some-test-dir/.agent-security/test_policy_engine.py -q
+node templates/common/test_policy_engine.js
 ```
 
-The repo's own CI (`.gitlab-ci.yml`) runs both: `npm test`, a
-`node docs.js` staleness check (fails the pipeline if `RULES.md` doesn't
-match `generate.js`/`stacks.js`), and an install+pytest loop against a
-fixture directory for every supported stack.
+`npm test` runs it too (as a subprocess), plus checks that the generated
+`policy.yaml` loads for every stack and that the vendored js-yaml still
+matches its recorded SHA-256. Inside an installed project the same suite
+lives at `.agent-security/test_policy_engine.js`.
+
+The repo's own CI (`.gitlab-ci.yml`) runs `npm test`, a `node docs.js`
+staleness check (fails the pipeline if `RULES.md` doesn't match
+`generate.js`/`stacks.js`), and an install + engine-suite loop against a
+fixture directory for every supported stack. No Python is provisioned
+anywhere.
 
 ## Architecture
 
@@ -78,8 +91,8 @@ fixture directory for every supported stack.
   safe.
 - **`docs.js`** — regenerates `RULES.md` by importing the same constants
   `generate.js` exports and parsing `KNOWN_IGNORE_FILES` directly out of
-  `templates/common/policy_engine.py` (regex over the source, not a second
-  hardcoded copy) — so the rules documentation can never silently diverge
+  `templates/common/policy_engine.js` (via `require()`, reading the exported
+  constant rather than a second hardcoded copy) — so the rules documentation can never silently diverge
   from what the installer actually does. CI enforces this by diffing
   `RULES.md` before/after regenerating it.
 
@@ -105,13 +118,13 @@ what actually happened in that run (`hooksPathStatus`, `ciHost`,
 explanation of each step ships as `.agent-security/POST_INSTALL.md`
 (source: `templates/common/POST_INSTALL.md`).
 
-### The policy engine (Python side, ships into target projects)
+### The policy engine (payload, ships into target projects)
 
-`templates/common/policy_engine.py` exposes one entrypoint,
+`templates/common/policy_engine.js` exposes one entrypoint,
 `evaluate(tool_name, tool_input, ...)`, called by every per-harness
-adapter (`templates/claude-code/hooks/pretooluse.py`,
-`templates/vscode-codex/hooks/pretooluse.py`,
-`templates/antigravity/scripts/pretooluse.py`). Adapters only translate
+adapter (`templates/claude-code/hooks/pretooluse.js`,
+`templates/vscode-codex/hooks/pretooluse.js`,
+`templates/antigravity/scripts/pretooluse.js`). Adapters only translate
 harness-specific JSON in/out; **all actual logic lives in this one
 module** so there is exactly one place to audit. It never varies by
 project language — only the data in `policy.yaml` (generated per-stack)
@@ -138,7 +151,7 @@ non-standard ignore files (`.cursorignore`, `.agentsignore`, ...
 `!negation` lines in those files are deliberately never honored — a
 repo's own ignore file must only ever *add* protection, never remove it.
 
-`final_check.py` is the completion gate (`Stop` hook): it re-executes
+`final_check.js` is the completion gate (`Stop` hook): it re-executes
 `required_checks` from `policy.yaml` itself rather than trusting the
 agent's claim that tests passed, and appends a report to
 `completion_reports.log`.
@@ -151,7 +164,7 @@ agent's claim that tests passed, and appends a report to
 - New agent/harness → new `templates/<agent>/` adapter that translates
   that harness's JSON to/from `policy_engine.evaluate_from_dict()`, plus
   an entry in `install.js`'s `AGENTS` map. Never put harness-specific
-  parsing inside `policy_engine.py`.
+  parsing inside `policy_engine.js`.
 - Changing core (language-agnostic) rules → edit
   `CORE_BLOCKED_COMMANDS`/`CORE_PROTECTED_PATHS` in `generate.js`, then run
   `node docs.js` to regenerate `RULES.md` (CI fails if you forget).

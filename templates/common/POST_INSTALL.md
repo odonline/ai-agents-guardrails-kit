@@ -1,5 +1,10 @@
 # Post-install checklist — what each step actually means
 
+**Requirement: `node` must be on your `PATH`.** The policy engine runs on
+Node (>= 16) and vendors its only dependency, so that is the entire
+prerequisite — nothing to install, no package manager, no virtualenv. If
+`node --version` fails, the hooks cannot run and nothing here is enforced.
+
 The installer just printed a numbered list of "next steps." This file is
 the long version: for each one, what it is, why it's there, and what
 concretely breaks if you skip it. Read this once after installing, then
@@ -17,48 +22,24 @@ console summary:
   installer already tells you which one applies to your specific run.
 - **[optional]** — purely a matter of taste/tuning, the defaults work.
 
-## 1–2. Install policy-engine deps and run its test suite — [recommended]
+## 1–2. Nothing to install — run the engine's test suite — [1: done, 2: recommended]
 
-Pick one, don't do both:
+There are no dependencies to install. The policy engine runs on Node and
+ships its only dependency (js-yaml) vendored in
+`.agent-security/vendor/` — a single self-contained file, verified by
+checksum, no package manager involved. Step 1 is already done.
 
-- **You have (or your editor offers to create) a venv for this project** —
-  use it, don't fight it:
-  ```bash
-  # activate your venv first, e.g. .venv\Scripts\activate (Windows) or
-  # source .venv/bin/activate (macOS/Linux) — then, inside it:
-  pip install pyyaml pytest
-  pytest .agent-security/test_policy_engine.py
-  ```
-  No `--break-system-packages` needed — a venv is already isolated from the
-  system Python, that's the whole point of the flag existing.
-- **You're not using a venv for this project at all** — install straight
-  into the system/user Python:
-  ```bash
-  pip install pyyaml pytest --break-system-packages
-  python -m pytest .agent-security/test_policy_engine.py
-  ```
-  Use `python -m pytest`, not bare `pytest` — pip installs the `pytest`
-  script into a Scripts/bin directory that often isn't on `PATH` (pip
-  warns about this when it happens), so the bare command fails with
-  "command not found" even though the install succeeded. Running it as a
-  module through `python` (which is on `PATH`) sidesteps that.
+Step 2 runs the engine's own test suite once, locally:
 
-Don't run the system-wide command *and* accept a "create a venv?" prompt
-from your editor for the same install — that's how you end up with pyyaml
-installed system-wide while pytest also tries to run from a venv that was
-never actually created, and commands like
-`.venv/Scripts/python.exe -m pip install ...` fail with "No such file or
-directory" because the venv doesn't exist yet. If your editor is offering
-to create one, either accept it and install inside it (first bullet), or
-dismiss the prompt and stick with `--break-system-packages` (second
-bullet) — just pick one path.
+```bash
+node .agent-security/test_policy_engine.js
+```
 
-`policy_engine.py` is the actual enforcement logic (what gets denied, what
-needs approval). This runs its own test suite once, locally, so you find
-out *now* if something about your Python environment is broken — not the
-first time an agent tries to do something dangerous and the hook silently
-fails open. Skipping this doesn't turn anything off; it just means you're
-trusting the engine works without having checked.
+`policy_engine.js` is the actual enforcement logic (what gets denied, what
+needs approval). Running its suite now tells you the engine works on this
+machine — rather than finding out the first time an agent tries something
+dangerous and the hook fails. Skipping it turns nothing off; it just means
+you are trusting the engine without having checked.
 
 ## 3. Merge any `*.new` files — [if applicable]
 
@@ -110,7 +91,7 @@ file isn't enough by itself:
 - **Neither generated** (unknown host, or you passed `--ci none`) — no CI
   file was written at all. Either re-run the installer with
   `--ci github` / `--ci gitlab`, or wire your own pipeline using
-  `.agent-security/test_policy_engine.py` and the per-stack checks listed
+  `.agent-security/test_policy_engine.js` and the per-stack checks listed
   in `RULES.md` as a reference.
 
 Until this is wired up, the *only* thing stopping an agent (or a human)
@@ -125,8 +106,9 @@ overwritten by re-running the installer. The defaults are usable as-is;
 edit it when you have project-specific paths to protect (see "`.gitignore`
 does not protect anything here" in `.agent-security/README.md`) or
 commands to add. After editing, re-run
-`python -m pytest .agent-security/test_policy_engine.py` to make sure
-nothing regressed.
+`node .agent-security/test_policy_engine.js` to make sure nothing
+regressed — the engine refuses to run at all on a policy file it cannot
+fully parse, so this catches a typo before it becomes a silent gap.
 
 ## 7. Have an agent validate the guardrails itself — [optional, recommended once]
 
@@ -135,10 +117,41 @@ policy actually fires against a live agent session. `SELF_TEST_PROMPT.md`
 (same directory as this file) is a ready-to-paste prompt that has an agent
 attempt each blocked command and protected path with its real tools and
 report the real decision it got back — the same "don't trust, verify"
-principle `final_check.py` applies to tests, applied to the guardrails
+principle `final_check.js` applies to tests, applied to the guardrails
 themselves. It's built to be safe to run even if something turns out to
 be broken (scratch directory, no real remote, no real database) — read
 its "Safety rules" section before running it.
+
+## Need it out of the way for a bit?
+
+```bash
+node .agent-security/toggle.js --disable    # ...and --enable to bring it back
+```
+
+Nothing is deleted — not your `policy.yaml`, not the adapters, not `.husky/`.
+Each harness's hook config is renamed out of the way and `core.hooksPath` goes
+back to what it was, so the harness simply stops calling the engine. Use this
+when you want to work without the gate for a while, or to check whether the kit
+is what's causing something.
+
+There is deliberately no `enabled: false` flag for this, because that flag would
+live inside the engine — a code path whose whole job is to allow everything, in
+the one component that exists to fail closed. Disabling means unhooking, and a
+rename shows up in `git status` where a flag inside a YAML would not.
+
+## Changed your mind for good?
+
+```bash
+node .agent-security/uninstall.js
+```
+
+Shows a plan, asks for confirmation, then removes what the installer put there —
+and only that. Anything you edited is kept and reported, `core.hooksPath` goes
+back to whatever it was before, and only the `.gitignore` lines the installer
+added get removed. See `.agent-security/README.md` for the details.
+
+Being able to leave cleanly is the point: a kit you cannot remove is a kit
+nobody tries.
 
 ## What none of this covers
 
