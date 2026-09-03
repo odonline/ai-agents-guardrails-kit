@@ -443,6 +443,36 @@ engineCase("filePath_ignore_file_edit_asks", "ask", "Write",
 engineCase("filePath_hook_config_edit_asks", "ask", "Write",
   { filePath: ".claude/settings.json" }, WORKSPACE);
 
+// --- G8 gates writes, not reads ---
+//
+// Self-protection exists to stop an agent DISABLING its guardrails. Reading
+// policy.yaml disables nothing — the file is committed and RULES.md says the
+// same things in prose — so asking about reads spends the human's attention
+// without buying protection, and trains them to approve `.agent-security/**`
+// prompts reflexively. Found in the field: it also made SELF_TEST_PROMPT.md
+// unrunnable, because denying the read (the correct instinct) stops the agent.
+engineCase("policy_file_read_allows", "allow", "Read",
+  { file_path: ".agent-security/policy.yaml" }, WORKSPACE);
+engineCase("hook_config_read_allows", "allow", "Read",
+  { file_path: ".claude/settings.json" }, WORKSPACE);
+engineCase("ignore_file_read_allows", "allow", "Read",
+  { file_path: ".cursorignore" }, WORKSPACE);
+engineCase("engine_grep_allows", "allow", "Grep",
+  { path: ".agent-security/policy_engine.js" }, WORKSPACE);
+
+// The exemption must not leak past reads. An unrecognized tool name is treated
+// as potentially mutating, so a new harness cannot buy silence by accident (G2).
+engineCase("unknown_tool_on_infra_still_asks", "ask", "SomeFutureTool",
+  { file_path: ".agent-security/policy.yaml" }, WORKSPACE);
+// Shell stays closed regardless: our tokenizer cannot tell `cat policy.yaml`
+// from `rm policy.yaml` reliably, and guessing wrong there is the expensive way.
+engineCase("shell_read_of_policy_still_asks", "ask", "Bash",
+  { command: "cat .agent-security/policy.yaml" }, WORKSPACE);
+// And protected_paths is untouched by any of this: a read of a secret is still
+// a deny, which is the whole reason reads go through the engine at all.
+engineCase("read_of_protected_path_still_denies", "deny", "Read",
+  { file_path: ".env" }, WORKSPACE);
+
 // --- fail-closed on junk input ---
 if (!engine) {
   pend("unparseable_input_defaults_deny");
