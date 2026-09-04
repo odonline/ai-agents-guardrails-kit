@@ -411,11 +411,16 @@ if (!engine) {
       "secrets/public.txt": "not actually secret",
     }));
 
-  engineCase("cursorignore_file_itself_requires_ask_to_edit", "ask", "Write",
+  // Deliberate divergence from the Python engine (#5): these two answered
+  // `ask` there and answer `deny` here. The case NAMES are kept because the
+  // G14 baseline pins them — renaming would look like a dropped case, which is
+  // the thing that check exists to catch. See the deny rationale in
+  // policy_engine.js step 3.
+  engineCase("cursorignore_file_itself_requires_ask_to_edit", "deny", "Write",
     { file_path: ".cursorignore" },
     mkWorkspace({ ".cursorignore": "secrets/\n" }));
 
-  engineCase("cursorignore_file_shell_delete_requires_ask", "ask", "Bash",
+  engineCase("cursorignore_file_shell_delete_requires_ask", "deny", "Bash",
     { command: "rm .cursorignore" },
     mkWorkspace({ ".cursorignore": "secrets/\n" }));
 
@@ -423,9 +428,24 @@ if (!engine) {
     { file_path: "src/index.ts" }, mkWorkspace({}));
 }
 
-// --- guardrail self-protection ---
-engineCase("policy_file_edit_asks", "ask", "Write",
+// --- guardrail self-protection: writes are DENIED, not asked ---
+//
+// Deliberate divergence from the Python engine (#5). An agent has no legitimate
+// reason to rewrite the rules binding it mid-session, so offering the choice as
+// a prompt put the most consequential decision behind the click a distracted
+// human makes fastest — and the prize for that click is every guardrail off.
+// The sanctioned path is a human editing the file, or
+// `node .agent-security/toggle.js --disable` first: deliberate, and visible in
+// git status. Name kept for the G14 baseline; see the note on the ignore-file
+// cases above.
+engineCase("policy_file_edit_asks", "deny", "Write",
   { file_path: ".agent-security/policy.yaml" }, WORKSPACE);
+engineCase("engine_source_write_denies", "deny", "Write",
+  { file_path: ".agent-security/policy_engine.js" }, WORKSPACE);
+engineCase("husky_hook_write_denies", "deny", "Write",
+  { file_path: ".husky/pre-commit" }, WORKSPACE);
+engineCase("ci_workflow_write_denies", "deny", "Write",
+  { file_path: ".github/workflows/security.yml" }, WORKSPACE);
 
 // --- G8 self-protection via the camelCase path key ---
 //
@@ -436,11 +456,11 @@ engineCase("policy_file_edit_asks", "ask", "Write",
 // `filePath` an agent could rewrite policy.yaml, delete .cursorignore, or edit
 // the hook config with NO approval prompt. Verified against the Python engine:
 // it answers `allow` for all three.
-engineCase("filePath_policy_edit_asks", "ask", "Write",
+engineCase("filePath_policy_edit_asks", "deny", "Write",
   { filePath: ".agent-security/policy.yaml" }, WORKSPACE);
-engineCase("filePath_ignore_file_edit_asks", "ask", "Write",
+engineCase("filePath_ignore_file_edit_asks", "deny", "Write",
   { filePath: ".cursorignore" }, WORKSPACE);
-engineCase("filePath_hook_config_edit_asks", "ask", "Write",
+engineCase("filePath_hook_config_edit_asks", "deny", "Write",
   { filePath: ".claude/settings.json" }, WORKSPACE);
 
 // --- G8 gates writes, not reads ---
@@ -462,16 +482,92 @@ engineCase("engine_grep_allows", "allow", "Grep",
 
 // The exemption must not leak past reads. An unrecognized tool name is treated
 // as potentially mutating, so a new harness cannot buy silence by accident (G2).
-engineCase("unknown_tool_on_infra_still_asks", "ask", "SomeFutureTool",
+engineCase("unknown_tool_on_infra_still_asks", "deny", "SomeFutureTool",
   { file_path: ".agent-security/policy.yaml" }, WORKSPACE);
-// Shell stays closed regardless: our tokenizer cannot tell `cat policy.yaml`
-// from `rm policy.yaml` reliably, and guessing wrong there is the expensive way.
+
+// A shell command that would MODIFY guardrail config is denied — otherwise the
+// structured deny is theater, since an agent that cannot Edit policy.yaml could
+// just `rm` it with one click-through.
+engineCase("shell_rm_policy_denies", "deny", "Bash",
+  { command: "rm .agent-security/policy.yaml" }, WORKSPACE);
+engineCase("shell_rm_hook_config_denies", "deny", "Bash",
+  { command: "rm .claude/settings.json" }, WORKSPACE);
+engineCase("shell_redirect_into_policy_denies", "deny", "Bash",
+  { command: "echo hacked > .agent-security/policy.yaml" }, WORKSPACE);
+engineCase("shell_sed_inplace_policy_denies", "deny", "Bash",
+  { command: "sed -i s/deny/allow/ .agent-security/policy.yaml" }, WORKSPACE);
+engineCase("shell_mv_hook_config_denies", "deny", "Bash",
+  { command: "mv .claude/settings.json /tmp/x" }, WORKSPACE);
+engineCase("shell_chmod_adapter_denies", "deny", "Bash",
+  { command: "chmod 000 .claude/hooks/pretooluse.js" }, WORKSPACE);
+
+// A shell command that only NAMES the directory still asks: the tokenizer is
+// not a shell parser, so it cannot prove the command is read-only. Erring to
+// `ask` here keeps `tail audit.log` usable without opening a write path.
 engineCase("shell_read_of_policy_still_asks", "ask", "Bash",
   { command: "cat .agent-security/policy.yaml" }, WORKSPACE);
+engineCase("shell_tail_audit_log_asks", "ask", "Bash",
+  { command: "tail -20 .agent-security/audit.log" }, WORKSPACE);
 // And protected_paths is untouched by any of this: a read of a secret is still
 // a deny, which is the whole reason reads go through the engine at all.
 engineCase("read_of_protected_path_still_denies", "deny", "Read",
   { file_path: ".env" }, WORKSPACE);
+
+// --- Git Bash / MSYS drive paths reach the same files as ~ ---
+//
+// Found by running SELF_TEST_PROMPT.md against a real project on Windows, not
+// by any test here: `cat ~/.ssh/id_rsa` was denied while
+// `cat /c/Users/<user>/.ssh/id_rsa` — the same file, through a path Git Bash
+// reads perfectly well — was ALLOWED. `/c/...` was not recognized as absolute,
+// so it resolved to the nonexistent `C:\c\...` and matched no anchored pattern.
+// Bare patterns like `.env` still caught it by basename; `~/.ssh/**`,
+// `~/.aws/**` and `~/.config/gcloud/**` did not.
+//
+// These run on every platform: on POSIX `/c/...` is an ordinary absolute path
+// outside the workspace, which the engine denies for a different reason. Either
+// way the answer must not be `allow`.
+if (!engine) {
+  ["msys_drive_path_no_bypass", "cygdrive_path_no_bypass", "msys_drive_structured_no_bypass"].forEach(pend);
+} else {
+  const home = require("os").homedir();
+  const drive = (home.match(/^([A-Za-z]):/) || [])[1];
+  const rest = home.replace(/^[A-Za-z]:/, "").replace(/\\/g, "/");
+
+  // evaluate(), not evaluateFromDict() — the latter takes only (tool, input)
+  // and silently drops a workspace argument, so the engine would look for
+  // policy.yaml next to itself, fail to find it, and deny for an unrelated
+  // reason. That made an earlier version of these tests pass even with the bug
+  // reintroduced; a mutation run is what caught it.
+  const notAllowed = (name, toolName, input) =>
+    test(name, () => {
+      const d = engine.evaluate(toolName, input, WORKSPACE, ENGINE_POLICY);
+      assert(
+        d.action !== "allow",
+        `${JSON.stringify(input)} must not be allowed — it reaches the same file as the ~ form ` +
+          `(got ${d.action}: ${d.reason})`
+      );
+      assert(
+        !/policy engine error/i.test(String(d.reason || "")),
+        `this must be denied by the path rules, not by a loader failure: ${d.reason}`
+      );
+    });
+
+  if (!drive) {
+    // No drive letter: not a Windows-style home, so there is no MSYS form of it.
+    ["msys_drive_path_no_bypass", "cygdrive_path_no_bypass", "msys_drive_structured_no_bypass"].forEach(pend);
+  } else {
+    const msys = `/${drive.toLowerCase()}${rest}/.ssh/id_rsa`;
+    const cyg = `/cygdrive/${drive.toLowerCase()}${rest}/.ssh/id_rsa`;
+    notAllowed("msys_drive_path_no_bypass", "Bash", { command: `cat ${msys}` });
+    notAllowed("cygdrive_path_no_bypass", "Bash", { command: `cat ${cyg}` });
+    notAllowed("msys_drive_structured_no_bypass", "Read", { file_path: msys });
+  }
+}
+
+// A leading single segment that is NOT a drive letter must be left alone, or we
+// would start denying ordinary absolute paths.
+engineCase("non_drive_absolute_path_allowed", "allow", "Bash",
+  { command: "cat /config/app.yml" }, WORKSPACE);
 
 // --- fail-closed on junk input ---
 if (!engine) {

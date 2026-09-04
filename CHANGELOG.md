@@ -2,6 +2,94 @@
 
 ## Unreleased
 
+### Bypass de rutas protegidas en Windows/Git Bash (corregido)
+
+**Lo más importante de esta tanda, y lo encontró el propio
+`SELF_TEST_PROMPT.md` corriendo contra un proyecto real** — no lo encontró
+ningún test del kit.
+
+| Comando | Antes | Ahora |
+|---|---|---|
+| `cat ~/.ssh/id_rsa` | deny | deny |
+| `cat /c/Users/<usuario>/.ssh/id_rsa` | **allow** | deny |
+| `cat /cygdrive/c/Users/<usuario>/.ssh/id_rsa` | **allow** | deny |
+
+Mismo archivo, dos formas de escribir la ruta. `/c/...` es una ruta **válida y
+legible** en Git Bash / MSYS2 (y `/cygdrive/c/...` en Cygwin), pero el motor no
+la reconocía como absoluta: `path.resolve()` la convertía en `C:\c\...`, una
+ruta inexistente que no matchea ningún patrón anclado. Afectaba a
+`~/.ssh/**`, `~/.aws/**` y `~/.config/gcloud/**` — todo patrón anclado. Los
+patrones "pelados" como `.env` seguían atrapándolo por nombre de archivo, que es
+por qué no salió antes.
+
+`expandShellDrivePath()` traduce esas formas a rutas Windows reales antes de
+resolver, sólo en `win32` (en POSIX `/c/Users` es una ruta absoluta legítima y
+reescribirla sería incorrecto). Con tests de regresión para las tres formas, más
+uno que verifica que un primer segmento que **no** es letra de unidad
+(`/config/app.yml`) se sigue tratando como antes.
+
+Los tests de regresión pasaron en el primer intento **con el bug reintroducido**:
+usaban `evaluateFromDict(tool, input, workspace)`, que sólo acepta dos
+argumentos, así que el workspace se descartaba y el motor denegaba por no
+encontrar `policy.yaml` — verde por el motivo equivocado. Lo detectó la corrida
+de mutación, no la lectura. Ahora usan `evaluate()` y además fallan si el motivo
+del deny es un error del loader en vez de una regla de path.
+
+### Editar la config del guardrail pasa de `ask` a `deny` (G8)
+
+Un agente no tiene ninguna razón legítima para reescribir las reglas que lo
+limitan en la misma sesión: todo intento es un error o un ataque. Ofrecerlo como
+prompt ponía la decisión más consecuente del sistema detrás del click que un
+humano distraído hace más rápido — y el premio por ese click es todos los
+guardrails apagados de una vez.
+
+- `Write`/`Edit`/borrado de `.agent-security/**`, cualquier config de hooks,
+  `.husky/**`, `.github/workflows/**` o un archivo de ignore: **deny**.
+- Lo mismo por la clave camelCase `filePath`, y para **cualquier nombre de
+  herramienta no reconocido** — la exención es una allowlist, no una denylist.
+- Comandos de shell que **modificarían** esa config (`rm`, `mv`, `>`, `sed -i`,
+  `chmod`, `tee`, `patch`, `git rm`...): **deny** también. Sin esto el cambio
+  sería teatro: un agente que no puede editar `policy.yaml` simplemente la
+  borraba con un click. Verificado: `rm .claude/settings.json` pasaba con `ask`.
+- Un comando de shell que sólo *nombra* el directorio sigue en `ask`: el
+  tokenizador no es un parser de shell y no puede probar que sea lectura, así que
+  `tail audit.log` sigue usable sin abrir un camino de escritura.
+
+La vía sancionada es mejor en todos los ejes: un humano edita el archivo, o corre
+`node .agent-security/toggle.js --disable` primero. Las dos son deliberadas y las
+dos aparecen en `git status`; un click en un prompt no.
+
+### Leer la config del guardrail pasa de `ask` a `allow`
+
+El contracambio, y el que hizo falta primero: la auto-protección se disparaba en
+**lecturas**, con el motivo "Change to guardrail infrastructure" sobre algo que no
+cambia nada. `policy.yaml` está commiteado y `RULES.md` dice lo mismo en prosa,
+así que leerlo no desactiva nada.
+
+Preguntar ahí costaba seguridad en vez de agregarla: un agente lee todo el
+tiempo, así que el humano se entrena a aprobar prompts de `.agent-security/**` de
+memoria — y después deja pasar el único que importaba. Medido en la práctica:
+además volvía **imposible de correr** al propio `SELF_TEST_PROMPT.md`, porque
+negar la lectura (el instinto correcto) le corta el paso al agente.
+
+`READ_ONLY_TOOLS` cubre las herramientas de lectura de los tres harnesses.
+`protected_paths` no cambió: `Read .env` sigue siendo `deny`.
+
+### `SELF_TEST_PROMPT.md`: tres correcciones que salieron de usarlo
+
+- **Filas 11–14 eran imposibles de correr.** Pedían crear `.env.selftest`
+  primero, pero crearlo lo deniega `.env.*`. El fixture nunca hizo falta: el
+  motor matchea el *patrón*, no la existencia del archivo. Ahora dice
+  explícitamente que no lo cree — y así, si un bloqueo fallara, el resultado es
+  "no such file" en vez de un archivo con forma de secreto en el repo.
+- **Sección E2 nueva**: la misma ruta protegida escrita de varias formas
+  (`~/`, absoluta, `/c/`, `/cygdrive/c/`) tiene que dar la misma decisión. Es la
+  sección que habría encontrado el bypass de arriba.
+- **"Blocked at setup" es ahora una instrucción.** Un agente que no puede armar
+  un fixture registra la fila y **sigue**: una tabla parcial con huecos honestos
+  sirve, una corrida que se detuvo en la fila 11 no.
+
+
 ### El kit nunca commitea, y ahora está garantizado por tests (G17)
 
 La historia del repo destino es del cliente. Esto **ya era cierto** —ninguna

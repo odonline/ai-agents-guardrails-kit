@@ -73,6 +73,57 @@ const FILE_TOOLS = new Set([
 ]);
 
 /**
+ * The one sanctioned way to change guardrail configuration, quoted in every
+ * deny reason. A blocked agent must be told the legitimate path, or the next
+ * thing it tries is a workaround.
+ */
+const DISABLE_HINT =
+  "Guardrail setup and config are off limits to agents. A human edits them directly, " +
+  "or runs 'node .agent-security/toggle.js --disable' first — both are deliberate and " +
+  "both show up in git status.";
+
+/**
+ * Shell verbs and operators that clearly modify a file.
+ *
+ * Used only to split "this command would change guardrail config" (deny) from
+ * "this command merely names it" (ask). The split exists because denying every
+ * command that mentions the directory would break `tail audit.log`, while
+ * asking about all of them leaves a one-click bypass — an agent that cannot
+ * Edit policy.yaml could just `rm` it.
+ *
+ * Deliberately a denylist of mutators rather than an allowlist of readers, and
+ * that is safe *here* because of which way each mistake falls: a mutator we
+ * fail to recognize still lands on `ask` (today's behavior, no worse), and a
+ * read we misjudge as a mutation lands on `deny` (mild friction). Neither
+ * error can produce an `allow`.
+ */
+const MUTATING_SHELL = [
+  [/(^|[\s;&|(])rm\s/, "rm"],
+  [/(^|[\s;&|(])rmdir\s/, "rmdir"],
+  [/(^|[\s;&|(])unlink\s/, "unlink"],
+  [/(^|[\s;&|(])mv\s/, "mv"],
+  [/(^|[\s;&|(])cp\s/, "cp"],
+  [/(^|[\s;&|(])install\s/, "install"],
+  [/(^|[\s;&|(])truncate\s/, "truncate"],
+  [/(^|[\s;&|(])dd\s/, "dd"],
+  [/(^|[\s;&|(])tee\s/, "tee"],
+  [/(^|[\s;&|(])chmod\s/, "chmod"],
+  [/(^|[\s;&|(])chown\s/, "chown"],
+  [/(^|[\s;&|(])ln\s/, "ln"],
+  [/(^|[\s;&|(])(sed|perl|ruby|python3?)\s+[^|;&]*-i\b/, "in-place edit"],
+  [/(^|[\s;&|(])(patch|git\s+apply)\b/, "patch"],
+  [/(^|[\s;&|(])git\s+(rm|checkout|restore)\b/, "git"],
+  [/>>?\s*[^\s|;&]/, "redirect"],
+];
+
+function mutatingShellVerb(command) {
+  for (const [re, label] of MUTATING_SHELL) {
+    if (re.test(command)) return label;
+  }
+  return null;
+}
+
+/**
  * Tools that only ever read.
  *
  * Used by the guardrail self-protection check (step 3 of evaluate) and NOWHERE
@@ -145,6 +196,35 @@ function expandHome(p) {
 }
 
 /**
+ * On Windows, translate the Unix-style drive paths that Git Bash / MSYS2 /
+ * Cygwin shells use into real Windows paths:
+ *
+ *   /c/Users/me/.ssh/id_rsa           -> C:/Users/me/.ssh/id_rsa
+ *   /cygdrive/c/Users/me/.ssh/id_rsa  -> C:/Users/me/.ssh/id_rsa
+ *
+ * Without this, `/c/...` is not recognized as absolute, so path.resolve()
+ * produces `C:\c\...` — a path that does not exist and matches no anchored
+ * pattern. That was a live protected-path bypass, found by running
+ * SELF_TEST_PROMPT.md against a real project on Windows: `cat ~/.ssh/id_rsa`
+ * was denied while `cat /c/Users/<user>/.ssh/id_rsa` — the same file, through a
+ * path Git Bash reads perfectly well — was allowed. Bare patterns like `.env`
+ * still caught it by basename; every anchored pattern (`~/.ssh/**`,
+ * `~/.aws/**`, `~/.config/gcloud/**`) did not.
+ *
+ * Only applied on win32: on a real POSIX system `/c/Users` is an ordinary
+ * absolute path and rewriting it would be wrong. Only a single-letter first
+ * segment is treated as a drive, which is exactly what those shells do.
+ */
+function expandShellDrivePath(p) {
+  if (process.platform !== "win32") return p;
+  const cygdrive = /^[/\\]cygdrive[/\\]([A-Za-z])(?=[/\\]|$)(.*)$/.exec(p);
+  if (cygdrive) return `${cygdrive[1].toUpperCase()}:${cygdrive[2] || "/"}`;
+  const msys = /^[/\\]([A-Za-z])(?=[/\\]|$)(.*)$/.exec(p);
+  if (msys) return `${msys[1].toUpperCase()}:${msys[2] || "/"}`;
+  return p;
+}
+
+/**
  * Resolve a possibly-relative, possibly-`~` path to an absolute one, following
  * symlinks where they exist. Mirrors Python's Path.resolve(strict=False): the
  * path need not exist. Returns null when resolution is not possible at all —
@@ -153,7 +233,7 @@ function expandHome(p) {
 function resolvePath(rawPath, workspaceRoot) {
   try {
     if (rawPath === undefined || rawPath === null || String(rawPath) === "") return null;
-    const expanded = expandHome(String(rawPath));
+    const expanded = expandShellDrivePath(expandHome(String(rawPath)));
     const absolute = path.resolve(String(workspaceRoot), expanded);
 
     // Resolve symlinks on the longest existing prefix, then re-attach the rest.
@@ -574,8 +654,24 @@ function evaluate(toolName, toolInput, workspaceRoot, policy) {
       }
 
       // Same self-protection idea as below, for `rm .cursorignore` and friends.
+      //
+      // Split by intent, because denying every shell command that merely names
+      // the directory would break `tail .agent-security/audit.log`, while
+      // asking about all of them leaves a one-click bypass: an agent that
+      // cannot Edit policy.yaml could just `rm` it.
       const infra = commandTouches(String(command), root, GUARDRAIL_INFRA_PATTERNS, "infra");
       if (infra) {
+        const mutator = mutatingShellVerb(String(command));
+        if (mutator) {
+          return finish(new Decision(
+            "deny",
+            `Blocked: '${mutator}' would modify guardrail infrastructure ('${infra.matched}'). ` +
+              DISABLE_HINT,
+            { matchedRule: infra.matched, toolName, details: { command, mutator } }
+          ));
+        }
+        // No mutation we can recognize — but our tokenizer is not a shell
+        // parser, so we cannot call it read-only either. Ask, as before.
         return finish(new Decision(
           "ask",
           `Command references guardrail infrastructure ('${infra.matched}') and requires human approval.`,
@@ -587,12 +683,25 @@ function evaluate(toolName, toolInput, workspaceRoot, policy) {
 
   // --- 3. guardrail self-protection for structured calls ---
   //
+  // This is a `deny`, not an `ask`, and that is the whole point. An agent has
+  // no legitimate reason to rewrite the rules binding it mid-session: every
+  // such attempt is a mistake or an attack. Offering the choice as a prompt
+  // put the one decision that matters most behind the click a distracted human
+  // makes fastest — and the prize for getting that click is every guardrail
+  // off at once.
+  //
+  // Denying costs nothing, because the legitimate path is better on every
+  // axis: a human edits policy.yaml directly, or runs
+  // `node .agent-security/toggle.js --disable` first. Both are deliberate,
+  // both show up in `git status`, and neither can be obtained by wearing the
+  // reviewer down.
+  //
   // Reads all three path keys, including `filePath`. The Python engine checked
   // only file_path/path here while checking all three above, which let a
   // harness sending `filePath` edit .agent-security/** without an `ask` — a
   // G8 bypass. See Tasks/policy-engine-node-port/02-policy-engine-port.md.
   // Reads are exempt here on purpose — see READ_ONLY_TOOLS. Writes, deletes,
-  // and any tool name we do not recognize still ask.
+  // and any tool name we do not recognize are denied.
   const rawPath = READ_ONLY_TOOLS.has(toolName) ? null : firstPath(input);
   if (rawPath) {
     const resolved = resolvePath(String(rawPath), root);
@@ -600,8 +709,8 @@ function evaluate(toolName, toolInput, workspaceRoot, policy) {
       const matched = matchProtectedPath(resolved, root, GUARDRAIL_INFRA_PATTERNS);
       if (matched) {
         return finish(new Decision(
-          "ask",
-          `Change to guardrail infrastructure ('${matched}') requires human approval.`,
+          "deny",
+          `Blocked: changing guardrail infrastructure ('${matched}'). ${DISABLE_HINT}`,
           { matchedRule: matched, toolName }
         ));
       }

@@ -53,10 +53,21 @@ as a single file you can read and checksum — see `vendor/VENDOR.md`.
    bad action value is an error at load time, not a rule that silently
    stops applying — so this catches a typo before it becomes a gap.
 3. This directory is itself protected: any agent trying to edit files under
-   `.agent-security/**` gets an automatic `ask` decision (see
-   `policy_engine.js`'s self-protection block). Changes should go through a
-   human-reviewed PR, not an agent edit in the same session it's trying to
-   bypass.
+   `.agent-security/**` — or any hook config, `.husky/**`,
+   `.github/workflows/**`, or an agent-ignore file — is **denied**, not asked
+   (see `policy_engine.js`'s self-protection block). Shell commands that would
+   modify them (`rm`, `mv`, `>`, `sed -i`, `chmod`, ...) are denied too, or the
+   file-tool deny would be trivially sidestepped.
+
+   `ask` was the wrong answer here: it put the single most consequential
+   decision in the system behind the click a distracted human makes fastest,
+   and the prize for that click is every guardrail off at once. Denying costs
+   nothing, because the legitimate path is better on every axis — a human edits
+   the file, or runs `node .agent-security/toggle.js --disable` first. Both are
+   deliberate and both show up in `git status`.
+
+   **Reading** these files is allowed. Reading disables nothing, and prompting
+   on reads only trains you to approve `.agent-security/**` prompts reflexively.
 
 ## What this never does to your git history
 

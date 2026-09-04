@@ -236,7 +236,7 @@ Cited by ID in specs, tasks, and hard stops.
 | **G5** | **Docs sync.** `RULES.md` is generated. Change core rules → run `node docs.js` and commit the result. CI diffs it and fails on drift. Never hand-edit `RULES.md`. | `generate.js`, `docs.js`, engine |
 | **G6** | **Stack parity.** A new or changed stack needs its `ci` (GitHub) **and** `gitlabCi` (Docker image) profile **and** a `STACK_MARKERS` fixture in `test/install.test.js`. Missing `gitlabCi` silently emits a broken GitLab pipeline. | `stacks.js` |
 | **G7** | **Harness parity.** An engine signature or contract change must be applied to all three adapters *and* all three hook configs. Two-out-of-three is a silent breakage for the third harness's users. | payload |
-| **G8** | **Self-protection.** Editing or shell-deleting `.agent-security/**`, any harness hook config, `.husky/**`, `.github/workflows/**`, or any `KNOWN_IGNORE_FILES` entry always returns `ask` — checked for both structured file calls and shell commands. An agent must not be able to disable its own guardrails mid-session. | engine |
+| **G8** | **Self-protection is a deny, and it covers reads separately.** Writing or deleting `.agent-security/**`, any harness hook config, `.husky/**`, `.github/workflows/**`, or any `KNOWN_IGNORE_FILES` entry returns **`deny`** — for structured file calls, for shell commands that would modify them (`rm`, `mv`, `>`, `sed -i`, `chmod`, ...), and for any unrecognized tool name. `ask` was wrong here: it put the most consequential decision in the system behind the click a distracted human makes fastest, and the prize for that click is every guardrail off. The sanctioned path is a human editing the file or `toggle.js --disable` first — deliberate, and visible in `git diff`. **Reading** these files is `allow` (see `READ_ONLY_TOOLS`): reading disables nothing, and prompting on reads only trains the human to approve `.agent-security/**` reflexively — it also made `SELF_TEST_PROMPT.md` unrunnable. A shell command that merely names the directory stays `ask`, because the tokenizer cannot prove it is read-only. | engine |
 | **G9** | **Ignore files only add.** `!negation` lines in `.cursorignore`/`.aiignore`/etc. are deliberately never honored. A repo's ignore file may only *add* protection, never remove it. This is intentional, not a bug — do not "fix" it. | engine |
 | **G10** | **Cross-platform.** Kit-side JS must work on Windows, macOS, and Linux. `npm test` runs on Windows. No bash-only assumptions, no hardcoded `/tmp`, no POSIX-only path handling. | installer, tests |
 | **G11** | **Exactly one CI file.** `.github/workflows/security.yml` **or** `.gitlab-ci.yml` — never both, and never guessed when the host is unknown and `--ci` was not passed. | installer |
@@ -452,6 +452,13 @@ Component-specific checklist (apply only what is relevant):
 - `protected_paths` merges `policy.yaml` and live ignore files on every call
   (mtime-cached). A change must preserve that liveness — do not bake anything in
   at install time.
+- **Every path shape that reaches a file must reach the same decision.** A rule
+  that catches one spelling is not a rule. Found in the field: on Windows,
+  `cat ~/.ssh/id_rsa` denied while `cat /c/Users/<user>/.ssh/id_rsa` — the same
+  file, through a path Git Bash reads fine — was **allowed**, because `/c/...`
+  was not treated as absolute and matched no anchored pattern. See
+  `expandShellDrivePath()`. When adding path handling, test the `~`, absolute,
+  relative, MSYS `/c/`, and Cygwin `/cygdrive/c/` forms of the same target.
 - Every new rule gets a test case in the engine suite.
 
 **Harness adapters (payload):**
