@@ -25,10 +25,40 @@ stack elegido).
    (tool call + shell).
 4. **Auto-protección de la infraestructura del propio kit** — editar o
    borrar `.agent-security/**`, los hooks de cada agente, o cualquiera de
-   los archivos de ignore listados en (3), siempre da `ask`.
+   los archivos de ignore listados en (3), da `deny`. Leerlos está
+   permitido: leer no desactiva nada, y preguntar por lecturas sólo entrena
+   al humano a aprobar prompts de `.agent-security/**` de memoria.
 5. **`required_checks` / completion gate** — no es una restricción de
    `PreToolUse`, corre al final (`Stop`) y re-ejecuta los checks en vez de
    confiar en lo que el agente dice.
+
+## `deny` se hace cumplir; `ask` se delega
+
+Distinción que importa más que cualquier regla de esta lista:
+
+- **`deny` lo hace cumplir el hook.** El motor devuelve `deny`, el harness
+  corta, y la operación no ocurre. No hay modo de sesión que lo saltee.
+- **`ask` se lo delega al harness.** El motor dice "esto necesita un humano" y
+  el harness decide cómo pedirlo. Si la sesión corre en un modo que
+  auto-aprueba —auto-accept, bypass, `--dangerously-skip-permissions`— el
+  `ask` se aprueba solo, sin prompt visible. Queda registrado en
+  `audit.log` como `ask`, pero el comando corre.
+
+O sea: **todo lo marcado 🟡 `ask` acá es advertencia, no barrera**, y su valor
+depende del modo de permisos con el que se corra el agente. Si algo tiene que
+quedar impedido sí o sí, tiene que ser `deny` en `policy.yaml` — editar el
+`action` de la regla es un cambio de una palabra.
+
+Verificado en campo (2026-09-04): en una sesión con prompts activos, las tres
+reglas `ask` del core preguntaron y esperaron la respuesta del humano. El
+tier funciona; lo que depende del modo es si se llega a preguntar.
+
+**Corolario para validar esto:** un agente **no puede** verificar el tier
+`ask` por su cuenta. El prompt va al humano, y una vez aprobado la tool call
+simplemente tiene éxito — desde el agente, un `ask` aprobado y un `allow`
+son idénticos. Sólo el humano puede confirmarlo. `SELF_TEST_PROMPT.md` está
+escrito así a propósito: esas filas se marcan "needs human confirmation", no
+✅ ni ❌.
 
 ## 1. Comandos bloqueados — reglas core (agnósticas al lenguaje)
 
@@ -192,7 +222,7 @@ del propio repo nunca puede *reducir* protección, solo sumarla.
 | `.codeiumignore` |
 | `.geminiignore` |
 
-## 5. Infraestructura auto-protegida (siempre `ask` al editar/borrar)
+## 5. Infraestructura auto-protegida (`deny` al editar/borrar, `allow` al leer)
 
 - `.agent-security/**`
 - `.claude/settings*.json`, `.claude/hooks/**`

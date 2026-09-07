@@ -501,6 +501,25 @@ engineCase("shell_mv_hook_config_denies", "deny", "Bash",
 engineCase("shell_chmod_adapter_denies", "deny", "Bash",
   { command: "chmod 000 .claude/hooks/pretooluse.js" }, WORKSPACE);
 
+// `2>/dev/null` is a stderr redirect: it writes nothing to the file being read.
+// Testing for the mere presence of `>` denied `wc -l audit.log 2>/dev/null` —
+// found in a real self-test run, not here. Appending `2>/dev/null` to a read is
+// one of the most common shell idioms there is, so the coarse check turned
+// ordinary inspection into a wall. The check now looks at the redirect TARGET.
+engineCase("stderr_redirect_on_read_is_not_a_write", "ask", "Bash",
+  { command: "wc -l .agent-security/audit.log 2>/dev/null || echo none" }, WORKSPACE);
+engineCase("fd_dup_on_read_is_not_a_write", "ask", "Bash",
+  { command: "grep x .agent-security/audit.log 2>&1" }, WORKSPACE);
+engineCase("redirect_to_elsewhere_is_not_a_write_to_infra", "ask", "Bash",
+  { command: "tail -5 .agent-security/audit.log > /tmp/out.txt" }, WORKSPACE);
+// ...and the target-based check must not have loosened the real thing.
+engineCase("quoted_redirect_target_denies", "deny", "Bash",
+  { command: 'echo x > ".agent-security/policy.yaml"' }, WORKSPACE);
+engineCase("redirect_after_devnull_still_denies", "deny", "Bash",
+  { command: "echo x 2>/dev/null > .agent-security/policy.yaml" }, WORKSPACE);
+engineCase("append_redirect_denies", "deny", "Bash",
+  { command: "echo x >> .agent-security/policy.yaml" }, WORKSPACE);
+
 // A shell command that only NAMES the directory still asks: the tokenizer is
 // not a shell parser, so it cannot prove the command is read-only. Erring to
 // `ask` here keeps `tail audit.log` usable without opening a write path.
@@ -568,6 +587,48 @@ if (!engine) {
 // would start denying ordinary absolute paths.
 engineCase("non_drive_absolute_path_allowed", "allow", "Bash",
   { command: "cat /config/app.yml" }, WORKSPACE);
+
+// --- audit context is an allowlist, not a passthrough ---
+//
+// The mode a decision was made under is what makes an `ask` line interpretable
+// later: "asked and a human said yes" and "asked and an auto-approving mode
+// said yes" are otherwise the same line. But a harness payload can carry the
+// file contents of a Write, so copying whatever arrives into a log that lives
+// in the repo is how a guardrail becomes the leak.
+if (!engine) {
+  ["audit_records_permission_mode", "audit_context_ignores_tool_content"].forEach(pend);
+} else {
+  test("audit_records_permission_mode", () => {
+    const ws = mkWorkspace({});
+    fs.mkdirSync(path.join(ws, ".agent-security"), { recursive: true });
+    engine.evaluate("Bash", { command: "git push origin main" }, ws, ENGINE_POLICY, {
+      permission_mode: "acceptEdits",
+      session_id: "abc123",
+      hook_event_name: "PreToolUse",
+    });
+    const line = fs.readFileSync(path.join(ws, ".agent-security/audit.log"), "utf8").trim().split("\n").pop();
+    const rec = JSON.parse(line);
+    assertEqual(rec.action, "ask", "decision");
+    assert(rec.session && rec.session.permission_mode === "acceptEdits",
+      `the mode must be on the line, got ${JSON.stringify(rec.session)}`);
+    assertEqual(rec.session.session_id, "abc123", "session_id");
+  });
+
+  test("audit_context_ignores_tool_content", () => {
+    const ws = mkWorkspace({});
+    fs.mkdirSync(path.join(ws, ".agent-security"), { recursive: true });
+    engine.evaluate("Bash", { command: "git push origin main" }, ws, ENGINE_POLICY, {
+      permission_mode: "default",
+      tool_input: { content: "SUPER_SECRET_VALUE" },
+      transcript_path: "/somewhere/transcript.jsonl",
+      anything_else: "SUPER_SECRET_VALUE",
+    });
+    const raw = fs.readFileSync(path.join(ws, ".agent-security/audit.log"), "utf8");
+    assert(!/SUPER_SECRET_VALUE/.test(raw), "audit log must never carry tool content");
+    assert(!/transcript\.jsonl/.test(raw), "only allowlisted keys are recorded");
+    assert(/"permission_mode":"default"/.test(raw), "the allowlisted key must still be there");
+  });
+}
 
 // --- fail-closed on junk input ---
 if (!engine) {

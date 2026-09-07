@@ -12,7 +12,8 @@
  *      workspace or matches a protected pattern.
  *   2. Shell commands: blocked_commands regexes first, then every path-looking
  *      token against protected paths, then against guardrail infrastructure.
- *   3. Guardrail self-protection for structured calls (always `ask`).
+ *   3. Guardrail self-protection for structured calls: writes and deletes are
+ *      denied, reads are allowed.
  *   4. Default: allow.
  *
  * Two things this deliberately does NOT do:
@@ -53,9 +54,9 @@ const KNOWN_IGNORE_FILES = [
   ".geminiignore",
 ];
 
-// The guardrail's own infrastructure. Editing OR shell-deleting any of these
-// always requires human approval, or the guardrails are trivial to switch off
-// from inside the very session they bind.
+// The guardrail's own infrastructure. Writing to OR shell-deleting any of these
+// is DENIED, or the guardrails are trivial to switch off from inside the very
+// session they bind. Reading them is allowed — see READ_ONLY_TOOLS.
 const GUARDRAIL_INFRA_PATTERNS = [
   ".agent-security/**",
   ".claude/settings*.json",
@@ -93,7 +94,8 @@ const DISABLE_HINT =
  *
  * Deliberately a denylist of mutators rather than an allowlist of readers, and
  * that is safe *here* because of which way each mistake falls: a mutator we
- * fail to recognize still lands on `ask` (today's behavior, no worse), and a
+ * fail to recognize still lands on `ask` (the pre-existing behavior, no worse),
+ * and a
  * read we misjudge as a mutation lands on `deny` (mild friction). Neither
  * error can produce an `allow`.
  */
@@ -113,13 +115,48 @@ const MUTATING_SHELL = [
   [/(^|[\s;&|(])(sed|perl|ruby|python3?)\s+[^|;&]*-i\b/, "in-place edit"],
   [/(^|[\s;&|(])(patch|git\s+apply)\b/, "patch"],
   [/(^|[\s;&|(])git\s+(rm|checkout|restore)\b/, "git"],
-  [/>>?\s*[^\s|;&]/, "redirect"],
 ];
 
-function mutatingShellVerb(command) {
+/**
+ * Does a redirect in this command actually write TO guardrail config?
+ *
+ * Testing merely for the presence of `>` was wrong, and a real run caught it:
+ * `wc -l .agent-security/audit.log 2>/dev/null` was denied. `2>/dev/null` is a
+ * stderr redirect — it writes nothing to the file being read. Appending
+ * `2>/dev/null` to a read is one of the most common shell idioms there is, so
+ * the coarse check turned ordinary inspection into a wall.
+ *
+ * Looking at the redirect's TARGET instead handles `/dev/null` and fd
+ * duplications (`2>&1`, which cannot match because `&` is excluded from the
+ * target class) for free, with nothing special-cased.
+ */
+function redirectWritesToInfra(command, root) {
+  const re = /(?:^|[\s;&|(])\d*>>?\s*("[^"]*"|'[^']*'|[^\s|;&<>]+)/g;
+  let m;
+  while ((m = re.exec(command)) !== null) {
+    const target = m[1].replace(/^["']|["']$/g, "");
+    if (!target || target === "/dev/null" || target.toUpperCase() === "NUL") continue;
+    const resolved = resolvePath(target, root);
+    if (resolved === null) continue;
+    if (matchProtectedPath(resolved, root, GUARDRAIL_INFRA_PATTERNS)) return true;
+  }
+  return false;
+}
+
+/**
+ * Which mutation, if any, this command performs.
+ *
+ * The verb checks stay coarse — "the command contains `rm` and names guardrail
+ * config" — because knowing which argument `rm` would actually delete needs a
+ * real shell parser. That over-blocks a compound like
+ * `rm /tmp/x && cat policy.yaml`, which is rare enough to accept. The redirect
+ * case gets precise treatment because `2>/dev/null` on a read is not rare.
+ */
+function mutatingShellVerb(command, root) {
   for (const [re, label] of MUTATING_SHELL) {
     if (re.test(command)) return label;
   }
+  if (redirectWritesToInfra(command, root)) return "redirect";
   return null;
 }
 
@@ -138,7 +175,7 @@ function mutatingShellVerb(command) {
  * Measured in the field: it also made SELF_TEST_PROMPT.md unrunnable, because
  * denying the read — the correct instinct — stops the agent dead.
  *
- * Anything NOT listed here is treated as potentially mutating and still asks:
+ * Anything NOT listed here is treated as potentially mutating and is denied:
  * an unrecognized tool name must never buy silence (G2).
  */
 const READ_ONLY_TOOLS = new Set([
@@ -567,11 +604,38 @@ function timestamp(now) {
  * deny into an allow: the caller already holds its decision, and a full disk is
  * not a reason to let a command through.
  */
-function audit(decision, workspaceRoot) {
+/**
+ * Session fields worth recording next to a decision, and nothing else.
+ *
+ * An allowlist, not a passthrough: a harness payload can carry the file
+ * contents of a Write, so copying whatever arrives into a log that lives in the
+ * repo is how a guardrail becomes the leak. These four are metadata.
+ *
+ * `permission_mode` is the one that matters. `deny` is enforced by the hook,
+ * but `ask` is handed to the harness — and in an auto-approving mode it is
+ * approved with no prompt. Recording the mode is what makes an `ask` line in
+ * the log interpretable after the fact: "asked and a human said yes" and
+ * "asked and the mode said yes" are the same line today.
+ */
+const AUDIT_CONTEXT_KEYS = ["permission_mode", "permissionMode", "hook_event_name", "session_id"];
+
+function auditContext(context) {
+  if (!context || typeof context !== "object") return null;
+  const out = {};
+  for (const key of AUDIT_CONTEXT_KEYS) {
+    const v = context[key];
+    if (typeof v === "string" && v && v.length <= 200) out[key] = v;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function audit(decision, workspaceRoot, context) {
   try {
     const dir = path.join(String(workspaceRoot), SECURITY_DIR);
     fs.mkdirSync(dir, { recursive: true });
     const record = { ts: timestamp(), ...decision.toDict() };
+    const ctx = auditContext(context);
+    if (ctx) record.session = ctx;
     fs.appendFileSync(path.join(dir, AUDIT_LOG_NAME), JSON.stringify(record) + "\n", "utf8");
   } catch (e) {
     /* deliberately swallowed — see the comment above */
@@ -588,7 +652,7 @@ function firstPath(toolInput) {
  * Turn one tool call into a Decision. Adapters call this and translate the
  * result into their harness's shape.
  */
-function evaluate(toolName, toolInput, workspaceRoot, policy) {
+function evaluate(toolName, toolInput, workspaceRoot, policy, context) {
   const input = toolInput && typeof toolInput === "object" ? toolInput : {};
   const root = workspaceRoot === undefined || workspaceRoot === null
     ? findWorkspaceRoot(process.cwd())
@@ -596,7 +660,7 @@ function evaluate(toolName, toolInput, workspaceRoot, policy) {
   const pol = policy === undefined || policy === null ? loadPolicy() : policy;
 
   const finish = (decision) => {
-    audit(decision, root);
+    audit(decision, root, context);
     return decision;
   };
 
@@ -661,7 +725,7 @@ function evaluate(toolName, toolInput, workspaceRoot, policy) {
       // cannot Edit policy.yaml could just `rm` it.
       const infra = commandTouches(String(command), root, GUARDRAIL_INFRA_PATTERNS, "infra");
       if (infra) {
-        const mutator = mutatingShellVerb(String(command));
+        const mutator = mutatingShellVerb(String(command), root);
         if (mutator) {
           return finish(new Decision(
             "deny",
@@ -721,9 +785,9 @@ function evaluate(toolName, toolInput, workspaceRoot, policy) {
 }
 
 /** evaluate() with default-deny on anything unexpected. Adapters use this. */
-function evaluateFromDict(toolName, toolInput) {
+function evaluateFromDict(toolName, toolInput, context) {
   try {
-    return evaluate(toolName, toolInput);
+    return evaluate(toolName, toolInput, undefined, undefined, context);
   } catch (e) {
     const what = e instanceof PolicyError ? e.message : (e && e.message) || String(e);
     return new Decision("deny", `Policy engine error, defaulting to deny: ${what}`, {

@@ -85,7 +85,14 @@ function main() {
   }
 
   const toolName = TOOL_NAME_MAP[rawToolName] || rawToolName;
-  const decision = engine.evaluateFromDict(toolName, toolInput);
+  // Pass the payload straight through as audit context. The engine keeps an
+  // allowlist of metadata keys and ignores everything else, so this cannot leak
+  // tool content into the log. The one that matters is `permission_mode`:
+  // `deny` is enforced here, but `ask` is handed to the harness, and in an
+  // auto-approving mode it is approved with no prompt. Without the mode on the
+  // line, "asked and a human said yes" and "asked and the mode said yes" look
+  // identical after the fact.
+  const decision = engine.evaluateFromDict(toolName, toolInput, payload);
   emit(decision.action, decision.reason);
   process.exit(0);
 }
