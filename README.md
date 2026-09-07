@@ -113,6 +113,48 @@ AGENTS.md, CLAUDE.md, GEMINI.md        # contrato operativo (no es
                                         # policy_engine.js)
 ```
 
+## ¿Commitear lo instalado, o dejarlo local?
+
+**Commiteálo, casi todo.** Un guardrail que tiene una sola persona no es un
+guardrail: si queda local, el agente de tu compañero corre sin restricciones
+sobre el mismo repo, y el riesgo nunca fue "mi agente" sino "un agente".
+
+Tres piezas directamente no funcionan sin estar trackeadas:
+
+| Ruta | Por qué |
+|---|---|
+| `.husky/pre-commit`, `pre-push` y los shims de encadenamiento | Así funciona husky: son contenido del repo. Los shims se escriben sin paths absolutos justamente para poder commitearse |
+| `.github/workflows/security.yml` o `.gitlab-ci.yml` | Sin commitear, el pipeline no existe. CI + branch protection es la capa de enforcement *real*; los git hooks son conveniencia |
+| `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` | Es el contrato operativo de los agentes de todo el equipo, no del tuyo |
+
+`policy.yaml` también va a git: es el set de reglas compartido, y cambiar una
+regla debería revisarse como cualquier otro cambio. El `install-manifest.json`
+igual — sin él, nadie que clone el repo puede desinstalar.
+
+Y hay una razón estructural: desactivar funciona **desenganchando** y no con un
+flag precisamente porque un rename aparece en `git diff` y un flag enterrado en
+un YAML no. Si nada está trackeado, ningún cambio a los guardrails es revisable
+y ese argumento se cae.
+
+**Lo que queda local, por developer:** `core.hooksPath` (es `git config`, no un
+archivo), `audit.log` y `completion_reports.log` (forenses por máquina, con
+texto de comandos — ya gitignoreados), los `*.new`, y
+`.claude/settings.local.json` para los permisos personales de cada uno.
+
+### El paso que nadie le transmite a quien clona
+
+`core.hooksPath` no se puede commitear, así que **cada persona que clone tiene
+que correrlo una vez**:
+
+```bash
+git config core.hooksPath .husky
+```
+
+Hasta que lo haga, recibe `.husky/` en su working tree y git ignora ese
+directorio por completo — los hooks son archivos de texto que nadie ejecuta, y
+**nada se lo avisa**. Es la forma más común de que un equipo crea que los
+guardrails están puestos para todos cuando están puestos para uno.
+
 ## Lo que el instalador NO hace con tu git
 
 No commitea. Nunca. Tu historia es tuya: el kit no corre `git add`, `commit`,

@@ -121,6 +121,21 @@ function planGitSteps(manifest) {
         `core.hooksPath vale '${current === null ? "(sin valor)" : current}', no '${set}'. ` +
         "Alguien lo cambió después de instalar, así que no lo toco.",
     });
+  } else if (before && !fs.existsSync(abs(before))) {
+    // `hooksPathBefore` is the only machine-specific field in the manifest: it
+    // records what ONE developer had before installing. The manifest is meant
+    // to be committed (without it nobody who clones can uninstall), so on
+    // someone else's clone that value can name a directory they never had.
+    // Restoring it would point their git at a directory that does not exist,
+    // and git then silently runs no hooks at all — the exact G12-in-reverse
+    // failure this step exists to prevent. Unset instead, and say why.
+    steps.push({
+      kind: "unset-hookspath",
+      text:
+        `Desetear core.hooksPath. El manifest dice que antes valía '${before}', pero ese ` +
+        "directorio no existe en este clone — probablemente lo instaló otra persona. " +
+        "Restaurarlo dejaría a git apuntando a la nada.",
+    });
   } else if (before) {
     steps.push({ kind: "restore-hookspath", value: before, text: `Restaurar core.hooksPath = '${before}'.` });
   } else {

@@ -866,6 +866,13 @@ qué existe, y qué pasa concretamente si te lo salteás.
      cada comando/ruta bloqueada con sus herramientas reales y reportar
      qué pasó, en vez de asumir que la política hace lo que dice.
 
+Commiteá lo que se escribió: sin eso los guardrails los tenés sólo vos, y el
+riesgo nunca fue "mi agente" sino "un agente". Y avisale al equipo que
+'core.hooksPath' es config local de git, no un archivo — cada persona que clone
+tiene que correr 'git config core.hooksPath .husky' una vez, o los hooks no le
+corren y nada se lo dice. El detalle de qué commitear y qué queda local está en
+.agent-security/README.md.
+
 ¿Y si molesta o no lo querés más? 'node .agent-security/toggle.js --disable'
 lo apaga sin borrar nada, y 'node .agent-security/uninstall.js' lo saca del
 todo. Los dos muestran el plan y piden confirmación antes de tocar algo.

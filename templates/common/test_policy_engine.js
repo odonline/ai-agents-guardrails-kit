@@ -588,6 +588,47 @@ if (!engine) {
 engineCase("non_drive_absolute_path_allowed", "allow", "Bash",
   { command: "cat /config/app.yml" }, WORKSPACE);
 
+// --- .github/workflows/** : deny on write, no ask on mention ---
+//
+// Found by a real self-test run: a plain `ls composer.json .github/workflows/*.yml`
+// asked for approval, while `ls .github/workflows/` did not — a bare directory
+// does not match a `/**` glob. That is not a policy, it is an artifact of the
+// matcher, and arbitrary prompts on ordinary CI inspection are how a human
+// learns to approve prompts without reading them.
+//
+// Its sensitivity is about modification (deleting the security job is the
+// attack), so all four write paths must still deny.
+engineCase("workflow_write_denies", "deny", "Write",
+  { file_path: ".github/workflows/security.yml" }, WORKSPACE);
+engineCase("workflow_write_camelcase_denies", "deny", "Write",
+  { filePath: ".github/workflows/security.yml" }, WORKSPACE);
+engineCase("workflow_unknown_tool_denies", "deny", "SomeFutureTool",
+  { file_path: ".github/workflows/security.yml" }, WORKSPACE);
+engineCase("workflow_shell_rm_denies", "deny", "Bash",
+  { command: "rm .github/workflows/security.yml" }, WORKSPACE);
+engineCase("workflow_shell_redirect_denies", "deny", "Bash",
+  { command: "echo x > .github/workflows/security.yml" }, WORKSPACE);
+engineCase("workflow_shell_sed_denies", "deny", "Bash",
+  { command: "sed -i s/gitleaks// .github/workflows/security.yml" }, WORKSPACE);
+// ...and inspecting CI must be frictionless, both spellings.
+engineCase("workflow_ls_dir_allows", "allow", "Bash",
+  { command: "ls .github/workflows/" }, WORKSPACE);
+engineCase("workflow_ls_glob_allows", "allow", "Bash",
+  { command: "ls composer.json .github/workflows/*.yml" }, WORKSPACE);
+engineCase("workflow_cat_allows", "allow", "Bash",
+  { command: "cat .github/workflows/security.yml" }, WORKSPACE);
+
+// The strict tier must not have moved: naming these in a shell command is
+// unusual enough to stay an ask.
+engineCase("strict_tier_policy_mention_asks", "ask", "Bash",
+  { command: "cat .agent-security/policy.yaml" }, WORKSPACE);
+engineCase("strict_tier_husky_mention_asks", "ask", "Bash",
+  { command: "cat .husky/pre-commit" }, WORKSPACE);
+engineCase("strict_tier_hook_config_mention_asks", "ask", "Bash",
+  { command: "cat .claude/settings.json" }, WORKSPACE);
+engineCase("strict_tier_ignore_file_mention_asks", "ask", "Bash",
+  { command: "cat .cursorignore" }, WORKSPACE);
+
 // --- audit context is an allowlist, not a passthrough ---
 //
 // The mode a decision was made under is what makes an `ask` line interpretable

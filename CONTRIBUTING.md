@@ -168,6 +168,12 @@ Dos reglas para no romperlo:
   lo agregás a `COMMON_FILES` o a `AGENTS`, eso pasa solo (`copyFile()`/
   `writeText()` alimentan el acumulador). Si lo escribís por fuera de esas dos
   funciones, registralo a mano o queda huérfano al desinstalar.
+- **El manifest se commitea, así que cuidado con los datos de máquina.** Sin él
+  nadie que clone puede desinstalar, pero eso significa que un campo específico
+  de una máquina viaja al clone de otra persona. Hoy hay exactamente uno:
+  `git.hooksPathBefore`. El desinstalador verifica que ese directorio exista en
+  este clone antes de restaurarlo — si no, desetea y lo explica. Si agregás otro
+  campo de ese tipo, tiene que traer su propia verificación.
 
 Y una que no es negociable: **no le agregues al motor ningún flag, sentinel file
 ni `enabled: false` que lo haga permitir todo.** Desactivar se hace

@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+### Qué commitear, y el paso que le falta a quien clona
+
+Faltaba lo más básico: el kit escribía 26 archivos y no decía en ninguna parte
+cuáles van a git y cuáles quedan locales.
+
+- **`.agent-security/README.md`** y **`POST_INSTALL.md`** ganan la tabla del
+  reparto. La regla en una línea: se commitea casi todo, porque un guardrail que
+  tiene una sola persona no es un guardrail. Y hay una razón estructural además
+  de la obvia — desactivar funciona desenganchando y no con un flag *porque* un
+  rename aparece en `git diff`; si nada está trackeado, ese argumento se cae.
+- **El resumen del instalador** cierra avisando dos cosas: commiteá lo que se
+  escribió, y `core.hooksPath` es config local de git, así que **cada persona
+  que clone tiene que correr `git config core.hooksPath .husky` una vez**. Hasta
+  que lo haga recibe `.husky/` y git ignora ese directorio por completo: los
+  hooks son texto que nadie ejecuta y nada se lo avisa. Es la forma más común de
+  que un equipo crea que los guardrails están puestos para todos cuando están
+  puestos para uno.
+- **`.claude/hooks/` documentado como punto de extensión.** Es guardrail
+  infrastructure, así que un agente no puede editar ni borrar nada de ahí — un
+  hook propio de `SessionStart` puesto en ese directorio queda a prueba de
+  manipulación por el agente al que está briefeando. Con las dos consecuencias
+  dichas: editar `settings.json` a mano hace que `uninstall.js` lo conserve (y
+  lo diga), y un script propio no está en el manifest así que sobrevive.
+
+### `--uninstall` ya no restaura un `hooksPath` que este clone no tiene
+
+`git.hooksPathBefore` es el **único** campo del manifest específico de una
+máquina: registra lo que tenía *un* developer antes de instalar. Y el manifest
+está pensado para commitearse, porque sin él nadie que clone puede desinstalar.
+
+En el clone de otra persona ese valor puede nombrar un directorio que nunca
+tuvo. Restaurarlo dejaba a su git apuntando a la nada — y git entonces **no
+corre ningún hook, en silencio**: exactamente el fallo G12-al-revés que ese paso
+existe para evitar.
+
+Ahora se verifica que el directorio exista en este clone antes de restaurarlo;
+si no está, se desetea y se explica por qué. Con test de regresión.
+
+Salió arreglando esto un fixture irreal que tenía la suite: el test de
+"restaurar el hooksPath previo" seteaba `core.hooksPath .githooks` sin crear el
+directorio. Pasaba igual porque el desinstalador no chequeaba nada.
+
+
 ### Bypass de rutas protegidas en Windows/Git Bash (corregido)
 
 **Lo más importante de esta tanda, y lo encontró el propio

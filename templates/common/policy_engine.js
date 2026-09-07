@@ -68,6 +68,38 @@ const GUARDRAIL_INFRA_PATTERNS = [
   ...KNOWN_IGNORE_FILES,
 ];
 
+/**
+ * The subset of GUARDRAIL_INFRA_PATTERNS where merely *naming* the path in a
+ * shell command is unusual enough to be worth a prompt.
+ *
+ * Every pattern above is protected against writes by four independent paths
+ * (structured file tools, mutating shell verbs, redirect targets, and the
+ * unrecognized-tool default). This list governs only the leftover case: a shell
+ * command that names guardrail config without any recognizable mutation. We
+ * cannot prove such a command is read-only, so for these paths we ask.
+ *
+ * `.github/workflows/**` is deliberately NOT here. It is where anyone goes to
+ * answer "how does CI work in this repo", so agents and humans list, cat and
+ * grep it constantly — and the old behavior was not even a coherent policy:
+ * `ls .github/workflows/` was allowed while `ls .github/workflows/*.yml` asked,
+ * because a bare directory does not match a `/**` glob. Prompting arbitrarily
+ * on ordinary inspection is how a human learns to approve prompts without
+ * reading them, which is the failure mode all of this exists to avoid.
+ *
+ * Its sensitivity is entirely about modification — CI plus branch protection is
+ * the real enforcement layer, so deleting the security job is the attack — and
+ * modification is still denied by all four paths.
+ */
+const INFRA_ASK_ON_MENTION = [
+  ".agent-security/**",
+  ".claude/settings*.json",
+  ".claude/hooks/**",
+  ".agents/hooks.json",
+  ".github/hooks/**",
+  ".husky/**",
+  ...KNOWN_IGNORE_FILES,
+];
+
 const FILE_TOOLS = new Set([
   "Write", "Edit", "create_file", "write_to_file", "replace_file_content",
   "multi_replace_file_content", "str_replace", "replace_string_in_file",
@@ -734,13 +766,17 @@ function evaluate(toolName, toolInput, workspaceRoot, policy, context) {
             { matchedRule: infra.matched, toolName, details: { command, mutator } }
           ));
         }
-        // No mutation we can recognize — but our tokenizer is not a shell
-        // parser, so we cannot call it read-only either. Ask, as before.
-        return finish(new Decision(
-          "ask",
-          `Command references guardrail infrastructure ('${infra.matched}') and requires human approval.`,
-          { matchedRule: infra.matched, toolName, details: { command } }
-        ));
+        // No mutation we can recognize — and our tokenizer is not a shell
+        // parser, so we cannot call it read-only either. Ask, but only for the
+        // paths where naming them at all is unusual (see INFRA_ASK_ON_MENTION).
+        const mention = commandTouches(String(command), root, INFRA_ASK_ON_MENTION, "infra");
+        if (mention) {
+          return finish(new Decision(
+            "ask",
+            `Command references guardrail infrastructure ('${mention.matched}') and requires human approval.`,
+            { matchedRule: mention.matched, toolName, details: { command } }
+          ));
+        }
       }
     }
   }

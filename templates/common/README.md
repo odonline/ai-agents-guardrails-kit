@@ -69,6 +69,70 @@ as a single file you can read and checksum — see `vendor/VENDOR.md`.
    **Reading** these files is allowed. Reading disables nothing, and prompting
    on reads only trains you to approve `.agent-security/**` prompts reflexively.
 
+## What to commit, and what not to
+
+**Commit almost all of it.** A guardrail only one person has is not a guardrail:
+if this stays local, a teammate's agent runs unrestricted on the same repo, and
+the risk was never "my agent" — it was "an agent".
+
+Three pieces do not work at all unless they are committed:
+
+| Path | Why it must be tracked |
+|---|---|
+| `.husky/pre-commit`, `.husky/pre-push`, and any chain shims | That is how husky works — they are repo content. The chain shims are written without absolute paths specifically so they can be committed |
+| `.github/workflows/security.yml` or `.gitlab-ci.yml` | Uncommitted, the pipeline does not exist. CI plus branch protection is the *real* enforcement layer; the git hooks are convenience |
+| `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` | The operating contract for the whole team's agents, not just yours |
+
+`policy.yaml` belongs in git too: it is the shared rule set, and changing a rule
+should be reviewed like any other change. `install-manifest.json` as well —
+without it, nobody who clones the repo can uninstall.
+
+There is also a structural reason. Deactivating works by *unhooking* rather than
+by a flag precisely because a rename shows up in `git diff` and a flag buried in
+a YAML file does not. If none of this is tracked, no change to the guardrails is
+reviewable, and that argument collapses.
+
+**What stays local, per developer:**
+
+| Path | Why |
+|---|---|
+| `core.hooksPath` | It is `git config`, not a file. It cannot be committed — see below |
+| `audit.log`, `completion_reports.log` | Per-machine forensics, and the log carries command text. Already gitignored by the installer |
+| `*.new` | Already gitignored. Merge them, then they are gone |
+| `.claude/settings.local.json` | The per-user override file. Personal permission tweaks go here, not in the shared `settings.json` |
+
+### The step nobody tells the person who clones
+
+`core.hooksPath` is local git config, so **every developer who clones has to run
+it once themselves**:
+
+```bash
+git config core.hooksPath .husky
+```
+
+Until they do, they get `.husky/` in their working tree and git ignores it
+completely — the hooks are just text files nobody executes, and nothing warns
+them. Put it in your onboarding notes, or in a `make setup` / `npm run setup`
+script. This is the single most common way a team ends up believing the
+guardrails are on for everyone when they are on for one person.
+
+### Adding your own hooks
+
+`.claude/hooks/` (and the equivalent directory for your harness) is a good place
+for a project's own agent hooks, because it is guardrail infrastructure: an
+agent cannot edit or delete anything in there. A `SessionStart` hook you put
+there is tamper-proof against the agent it is meant to brief.
+
+Two consequences to know:
+
+- Once you hand-edit `.claude/settings.json` to register your hook, its content
+  no longer matches what the installer wrote, so **`uninstall.js` will keep it
+  and say so** — which means the guardrails stay wired after uninstalling until
+  you remove those blocks yourself. The uninstaller states this loudly rather
+  than quietly leaving you with a broken hook.
+- Your own hook script is not in the manifest, so the uninstaller never touches
+  it. It survives, which is correct.
+
 ## What this never does to your git history
 
 It does not commit. The installer, the uninstaller and `toggle.js` never run

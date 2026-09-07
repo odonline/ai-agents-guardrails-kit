@@ -98,6 +98,25 @@ or a `.husky/<hook>` the installer did not write — it does not configure
 which is the honest trade: better inactive-and-said-so than silently
 disabling a safeguard you already had.
 
+### Everyone else on the team has to run it too
+
+This is the step that gets forgotten, because the installer cannot do it for
+anyone but you. `core.hooksPath` is **local git config, not a file** — it
+cannot be committed. So every developer who clones the repo has to run it once:
+
+```bash
+git config core.hooksPath .husky
+```
+
+Until they do, they get `.husky/` in their working tree and git ignores that
+directory entirely. The hooks are text files nobody executes, and **nothing
+warns them.** Put the line in your onboarding notes, or in a `make setup` /
+`npm run setup` script.
+
+This is the most common way a team ends up believing the guardrails are on for
+everyone when they are on for one person. See `.agent-security/README.md` →
+"What to commit, and what not to" for the rest of the shared-versus-local split.
+
 Either way, remember these are a **convenience layer**, not the
 enforcement layer: anyone can bypass them with `--no-verify` (which the
 policy engine itself blocks as a command, but only for agents it's

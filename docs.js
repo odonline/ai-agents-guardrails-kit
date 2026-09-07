@@ -153,7 +153,21 @@ del propio repo nunca puede *reducir* protección, solo sumarla.
 
 ${table(["Archivo"], KNOWN_IGNORE_FILES.map((f) => [`\`${f}\``]))}
 
-## 5. Infraestructura auto-protegida (\`deny\` al editar/borrar, \`allow\` al leer)
+## 5. Infraestructura auto-protegida (\`deny\` al escribir/borrar, \`allow\` al leer)
+
+Un comando de shell que **modificaría** cualquiera de estas rutas (\`rm\`,
+\`mv\`, \`>\`, \`sed -i\`, \`chmod\`, \`tee\`, \`patch\`...) también da \`deny\`.
+Uno que sólo las **nombra** da \`ask\`, porque el tokenizer no es un parser de
+shell y no puede probar que sea lectura.
+
+**Excepción: \`.github/workflows/**\`.** Escribirla sigue denegado por las
+cuatro vías, pero nombrarla en un comando de shell no pide permiso. Es donde
+cualquiera mira para responder "cómo funciona el CI acá", así que agentes y
+humanos la listan y la leen todo el tiempo — y el comportamiento anterior no era
+ni coherente: \`ls .github/workflows/\` pasaba y \`ls .github/workflows/*.yml\`
+preguntaba, porque un directorio pelado no matchea un glob \`/**\`. Preguntar
+arbitrariamente sobre inspección normal es cómo se entrena a alguien a aprobar
+prompts sin leerlos.
 
 - \`.agent-security/**\`
 - \`.claude/settings*.json\`, \`.claude/hooks/**\`

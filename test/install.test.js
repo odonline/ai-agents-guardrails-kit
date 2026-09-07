@@ -1086,6 +1086,10 @@ test("uninstall restores the previous core.hooksPath", () => {
   const dir = mkTmp("uninstall-hooks");
   writeFixtureFiles(dir, STACK_MARKERS.node());
   gitInit(dir, "https://github.com/someorg/somerepo.git");
+  // The directory has to actually exist: a hooksPath pointing at nothing is
+  // not a state worth restoring, and the uninstaller now unsets instead — see
+  // "uninstall unsets rather than restoring a hooksPath dir this clone lacks".
+  fs.mkdirSync(path.join(dir, ".githooks"), { recursive: true });
   execFileSync("git", ["config", "core.hooksPath", ".githooks"], { cwd: dir });
   runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
   assert(gitConfigGet(dir, "core.hooksPath") === ".husky", "install should have taken it");
@@ -1095,6 +1099,32 @@ test("uninstall restores the previous core.hooksPath", () => {
     gitConfigGet(dir, "core.hooksPath") === ".githooks",
     "uninstall must restore the project's own hooksPath, not just unset it"
   );
+});
+
+test("uninstall unsets rather than restoring a hooksPath dir this clone lacks", () => {
+  // `hooksPathBefore` is the one machine-specific field in the manifest, and the
+  // manifest is meant to be committed (without it nobody who clones can
+  // uninstall). So on a teammate's clone it can name a directory they never
+  // had; restoring it would point their git at nothing, and git then silently
+  // runs no hooks — G12 in reverse.
+  const dir = mkTmp("uninstall-hookspath-foreign");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  fs.mkdirSync(path.join(dir, ".githooks"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".githooks/pre-commit"), "#!/bin/sh\nexit 0\n");
+  execFileSync("git", ["config", "core.hooksPath", ".githooks"], { cwd: dir });
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+
+  // Stand in for "installed by someone else": the recorded directory is gone.
+  fs.rmSync(path.join(dir, ".githooks"), { recursive: true, force: true });
+
+  const r = runUninstall(dir, ["--yes"]);
+  assert(r.code === 0, `uninstall should exit 0, got ${r.code}:\n${r.out}`);
+  assert(
+    gitConfigGet(dir, "core.hooksPath") === null,
+    `expected hooksPath unset, got ${JSON.stringify(gitConfigGet(dir, "core.hooksPath"))}`
+  );
+  assert(/no existe en este clone/.test(r.out), "it must say why it did not restore");
 });
 
 test("uninstall unsets core.hooksPath when there was none before", () => {
@@ -1965,6 +1995,37 @@ test("uninstall and disable leave the target's git history untouched (G17)", () 
   assert(
     execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim() === headBefore,
     "removing the kit must not touch history either"
+  );
+});
+
+test("the summary tells the user to commit and to share the hooksPath step", () => {
+  // The one step the installer cannot do for anyone but the person running it:
+  // core.hooksPath is local git config, so a teammate who clones gets .husky/
+  // and git ignores it entirely, with nothing warning them. A team then
+  // believes the guardrails are on for everyone when they are on for one
+  // person.
+  const dir = mkTmp("summary-commit");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir);
+  const out = runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--yes"]);
+  assert(/[Cc]ommiteá/.test(out), "the summary must tell the user to commit what was written");
+  assert(
+    /cada persona que clone[\s\S]{0,120}core\.hooksPath \.husky/.test(out),
+    "it must name the once-per-developer step, with the exact command"
+  );
+  assert(/README\.md/.test(out), "and point at where the full split is documented");
+});
+
+test("payload docs explain what to commit and what stays local", () => {
+  const readme = fs.readFileSync(path.join(KIT_ROOT, "templates/common/README.md"), "utf8");
+  const post = fs.readFileSync(path.join(KIT_ROOT, "templates/common/POST_INSTALL.md"), "utf8");
+  assert(/What to commit/.test(readme), "the payload README needs the commit/local split");
+  for (const needed of [".husky/", "install-manifest.json", "settings.local.json", "audit.log"]) {
+    assert(readme.includes(needed), `the split must cover ${needed}`);
+  }
+  assert(
+    /git config core\.hooksPath \.husky/.test(post),
+    "POST_INSTALL must give the exact per-developer command"
   );
 });
 
