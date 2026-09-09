@@ -64,18 +64,31 @@ escrito así a propósito: esas filas se marcan "needs human confirmation", no
 
 Aplican siempre, sin importar el stack detectado.
 
+> **Cómo leer `[^;&|\n]*?` en los patrones.** Es "…y después, en el mismo
+> comando, …". Reemplaza al `\s+` que antes separaba un programa de su
+> subcomando, porque casi ningún CLI los pone pegados: entre `git` y
+> `commit` van las opciones globales (`git -c user.email=x commit`,
+> `git -C /path reset`, `docker --config=/tmp push`). Toda regla escrita con
+> `\s+` ahí se evadía con una opción global — once tenían el problema, y lo
+> encontró una corrida real del self-test, no un test del kit.
+>
+> Excluir `;`, `&`, `|` y saltos de línea es lo que evita que la
+> tolerancia cruce a otro comando: `git status; echo commit --no-verify` no es
+> un commit. Y es una clase de caracteres simple a propósito, sin cuantificadores
+> anidados: el matcher corre en cada tool call, así que tiene que ser lineal.
+
 | Patrón | Acción | Motivo |
 | --- | --- | --- |
-| `\bgit\s+push\s+(--force\|-f\|--force-with-lease)\b` | 🔴 deny | Force push blocked. |
-| `\bgit\s+push\b` | 🟡 ask | Pushing changes requires explicit human approval. |
-| `\bgit\s+(reset\s+--hard\|clean\s+-f\|branch\s+-D)\b` | 🔴 deny | Destructive Git operation blocked. |
+| `\bgit[^;&\|\n]*?\bpush[^;&\|\n]*?(--force\|-f\|--force-with-lease)\b` | 🔴 deny | Force push blocked. |
+| `\bgit[^;&\|\n]*?\bpush\b` | 🟡 ask | Pushing changes requires explicit human approval. |
+| `\bgit[^;&\|\n]*?\b(reset[^;&\|\n]*?--hard\|clean[^;&\|\n]*?-[a-zA-Z]*f\|branch[^;&\|\n]*?(-D\b\|--delete[^;&\|\n]*?--force\b))` | 🔴 deny | Destructive Git operation blocked. |
 | `\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\|-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*\|--recursive.*--force\|--force.*--recursive)\b` | 🔴 deny | Recursive forced deletion blocked. |
-| `\b(git\s+commit\s+.*--no-verify\|git\s+push\s+.*--no-verify)\b` | 🔴 deny | Hook bypass is not permitted. |
+| `\bgit[^;&\|\n]*?\b(commit\|push)\b[^;&\|\n]*--no-verify\b` | 🔴 deny | Hook bypass is not permitted. |
 | `\b(DROP\s+DATABASE\|DROP\s+TABLE\|TRUNCATE)\b` | 🔴 deny | Destructive database operation blocked. |
 | `\bDELETE\s+FROM\b(?!.*\bWHERE\b)` | 🔴 deny | DELETE without WHERE clause blocked. |
 | `\bDELETE\s+FROM\b` | 🟡 ask | Potentially destructive database operation requires approval. |
 | `\bcurl\b.*\\|\s*(sh\|bash\|zsh)\b` | 🔴 deny | curl-pipe-shell execution blocked. |
-| `\bdocker\s+push\b` | 🟡 ask | Pushing a container image requires approval. |
+| `\bdocker[^;&\|\n]*?\bpush\b` | 🟡 ask | Pushing a container image requires approval. |
 | `\b(aws\|gcloud\|az)\s+.*(delete\|terminate\|destroy)\b` | 🟡 ask | Cloud-provider destructive action requires approval. |
 
 ## 2. Rutas protegidas — core
@@ -106,8 +119,8 @@ Detectado por: `package.json`
 
 | Patrón | Acción | Motivo |
 | --- | --- | --- |
-| `\bnpm\s+publish\b` | 🟡 ask | Publishing a package requires approval. |
-| `\bnpx\s+\S+@\S+` | 🟡 ask | Running an unpinned remote npx package requires approval. |
+| `\bnpm[^;&\|\n]*?\bpublish\b` | 🟡 ask | Publishing a package requires approval. |
+| `\bnpx[^;&\|\n]*?\b\S+@\S+` | 🟡 ask | Running an unpinned remote npx package requires approval. |
 
 **Checks de completion gate:**
 
@@ -127,10 +140,10 @@ Detectado por: `composer.json`
 
 | Patrón | Acción | Motivo |
 | --- | --- | --- |
-| `\bphp\s+artisan\s+migrate:(fresh\|reset)\b` | 🔴 deny | Destructive Laravel migration blocked. |
-| `\bphp\s+artisan\s+migrate\b` | 🟡 ask | Running migrations requires approval. |
-| `\bphp\s+artisan\s+db:wipe\b` | 🔴 deny | Destructive database wipe blocked. |
-| `\bcomposer\s+(remove\|require)\b` | 🟡 ask | Changing dependencies requires approval. |
+| `\bphp[^;&\|\n]*?\bartisan[^;&\|\n]*?\bmigrate:(fresh\|reset)\b` | 🔴 deny | Destructive Laravel migration blocked. |
+| `\bphp[^;&\|\n]*?\bartisan[^;&\|\n]*?\bmigrate\b` | 🟡 ask | Running migrations requires approval. |
+| `\bphp[^;&\|\n]*?\bartisan[^;&\|\n]*?\bdb:wipe\b` | 🔴 deny | Destructive database wipe blocked. |
+| `\bcomposer[^;&\|\n]*?\b(remove\|require)\b` | 🟡 ask | Changing dependencies requires approval. |
 
 **Checks de completion gate:**
 
@@ -189,8 +202,8 @@ Detectado por: `requirements.txt`, `pyproject.toml`, `Pipfile`
 
 | Patrón | Acción | Motivo |
 | --- | --- | --- |
-| `\btwine\s+upload\b` | 🟡 ask | Publishing to PyPI requires approval. |
-| `\bpip\s+install\s+.*--index-url\b` | 🟡 ask | Installing from a non-default index requires approval. |
+| `\btwine[^;&\|\n]*?\bupload\b` | 🟡 ask | Publishing to PyPI requires approval. |
+| `\bpip[^;&\|\n]*?\binstall\b.*--index-url\b` | 🟡 ask | Installing from a non-default index requires approval. |
 
 **Checks de completion gate:**
 

@@ -100,6 +100,19 @@ escrito así a propósito: esas filas se marcan "needs human confirmation", no
 
 Aplican siempre, sin importar el stack detectado.
 
+> **Cómo leer \`[^;&|\\n]*?\` en los patrones.** Es "…y después, en el mismo
+> comando, …". Reemplaza al \`\\s+\` que antes separaba un programa de su
+> subcomando, porque casi ningún CLI los pone pegados: entre \`git\` y
+> \`commit\` van las opciones globales (\`git -c user.email=x commit\`,
+> \`git -C /path reset\`, \`docker --config=/tmp push\`). Toda regla escrita con
+> \`\\s+\` ahí se evadía con una opción global — once tenían el problema, y lo
+> encontró una corrida real del self-test, no un test del kit.
+>
+> Excluir \`;\`, \`&\`, \`|\` y saltos de línea es lo que evita que la
+> tolerancia cruce a otro comando: \`git status; echo commit --no-verify\` no es
+> un commit. Y es una clase de caracteres simple a propósito, sin cuantificadores
+> anidados: el matcher corre en cada tool call, así que tiene que ser lineal.
+
 ${table(
   ["Patrón", "Acción", "Motivo"],
   CORE_BLOCKED_COMMANDS.map((r) => [`\`${r.pattern}\``, actionBadge(r.action), r.reason])

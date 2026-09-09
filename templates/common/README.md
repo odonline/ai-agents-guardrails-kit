@@ -69,6 +69,46 @@ as a single file you can read and checksum — see `vendor/VENDOR.md`.
    **Reading** these files is allowed. Reading disables nothing, and prompting
    on reads only trains you to approve `.agent-security/**` prompts reflexively.
 
+## Reading `completion_reports.log`
+
+Three statuses, and the difference between two of them used to be invisible:
+
+| `status` | What it means |
+|---|---|
+| `ok` | Every configured check ran and passed |
+| `blocked` | A check failed, could not run, or ran out of time. Exit 1 |
+| `skipped` | **Nothing was verified.** Either `--post-tool-use` (which runs no checks by design) or an empty `required_checks`. The `reason` says which |
+
+`ok` used to cover the `skipped` cases too, so a log full of
+`{"status":"ok","checks":{}}` looked like a green gate when in fact nothing had
+ever been checked. If you see `skipped` on a full Stop run, add your test and
+lint commands to `required_checks` in `policy.yaml` — until you do, this gate
+approves everything.
+
+Note that a check's `exit_code: 0` can also mean *skipped* rather than *passed*:
+the generated commands degrade on purpose, e.g.
+`[ -x vendor/bin/phpunit ] && vendor/bin/phpunit || echo "phpunit not installed, skipping"`.
+That is deliberate — the gate should not fail because a tool is not installed —
+but it does mean a green report on a machine without the toolchain proves less
+than it looks like it does. The `command` string is in the report so you can
+tell.
+
+### The time budget
+
+The gate gives itself **280 seconds total** for all checks combined, and no
+single check may outlast what is left of that. The shipped `Stop` hook timeout
+is 300 s, which leaves room for the report to be written.
+
+Those two numbers are a pair. Before, each check got 600 s while the hook
+timeout was 60 s: a slow suite meant the harness killed the hook and **no report
+was written at all** — the gate failing open, which is the one thing it must
+never do. Running out of budget is now a `blocked` report naming what did not
+get to run.
+
+If your suite legitimately needs longer, raise **both**: `GUARDRAILS_CHECK_BUDGET_MS`
+in the environment, and the `Stop` hook's `timeout` in your harness config.
+Raising only one puts you back where you started.
+
 ## What to commit, and what not to
 
 **Commit almost all of it.** A guardrail only one person has is not a guardrail:

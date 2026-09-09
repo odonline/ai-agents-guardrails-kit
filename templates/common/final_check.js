@@ -13,12 +13,23 @@
  * Exit 0 when every required check passed, 1 otherwise. A gate that cannot read
  * its own policy exits 1 — it has no basis on which to approve anything.
  *
- * Known and deliberate, carried over from the Python version rather than fixed
- * here (see Tasks/policy-engine-node-port/00-overview.md, "Deuda preexistente"):
- *   - `--post-tool-use` runs NO checks. It appends an "ok" report and returns.
- *     That is what it has always done; it is log noise, not a check.
- *   - Each check gets 600 s, but the harnesses declare a 60 s hook timeout. A
- *     slow suite gets the hook killed before the gate finishes.
+ * Two things the report is careful about, because both were misleading in the
+ * field:
+ *
+ *   - **"ok" means checks ran and passed.** It used to also mean "nothing ran":
+ *     `--post-tool-use` executes no checks, and a project with no detected
+ *     stack has no checks to execute, and both produced
+ *     `{"status":"ok","checks":{}}`. Anyone reading the log later saw a pass.
+ *     Those two now report `status: "skipped"` with a reason that says which
+ *     case it was.
+ *
+ *   - **The gate refuses to be killed silently.** Checks used to get 600 s each
+ *     while the harness declared a 60 s hook timeout, so a slow suite meant the
+ *     hook was killed with no report written at all — the gate failing *open*,
+ *     which is the one thing it must never do. There is now a total budget
+ *     (TOTAL_BUDGET_MS, overridable with GUARDRAILS_CHECK_BUDGET_MS) sized to
+ *     fit under the shipped hook timeout. Running out of it is a `blocked`
+ *     report naming what did not get to run, not a silent death.
  */
 
 "use strict";
@@ -32,7 +43,25 @@ const { loadPolicy, PolicyError } = require("./policy_loader.js");
 const HERE = __dirname;
 const PROJECT_ROOT = path.resolve(HERE, "..");
 const REPORT_LOG = path.join(HERE, "completion_reports.log");
-const CHECK_TIMEOUT_MS = 600 * 1000;
+/**
+ * How long the whole gate may take, and therefore how long any one check may.
+ *
+ * This has to fit *under* the Stop hook timeout the harness configs declare
+ * (300 s as shipped), or the harness kills the hook before a report is written
+ * and the gate fails open. 280 s leaves room for node startup and the write.
+ *
+ * A project whose suite genuinely needs longer raises both: this budget via
+ * GUARDRAILS_CHECK_BUDGET_MS, and the `Stop` hook's `timeout` in its harness
+ * config. Raising only one of them recreates the original bug, so the blocked
+ * report names both.
+ */
+const TOTAL_BUDGET_MS = (() => {
+  const raw = Number(process.env.GUARDRAILS_CHECK_BUDGET_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 280 * 1000;
+})();
+
+/** No single check may outlast the whole gate. */
+const CHECK_TIMEOUT_MS = TOTAL_BUDGET_MS;
 
 /** Python's time.strftime("%Y-%m-%dT%H:%M:%S%z"), so log lines stay uniform. */
 function timestamp() {
@@ -55,13 +84,25 @@ function timestamp() {
  * use POSIX syntax — on Windows those will not run under cmd.exe. That is
  * pre-existing behavior, not something this port introduced.
  */
-function runCheck(name, command) {
+function runCheck(name, command, remainingMs) {
+  // Clamp to what is left of the whole gate's budget. Without this, check #2
+  // can still be running when the harness's hook timeout fires, and a killed
+  // hook writes no report at all.
+  const budget = Math.min(CHECK_TIMEOUT_MS, Math.max(0, remainingMs));
+  if (budget <= 0) {
+    return {
+      executed: false,
+      exit_code: null,
+      command,
+      error: "not run: the gate's time budget was exhausted by earlier checks",
+    };
+  }
   try {
     const proc = spawnSync(command, {
       shell: true,
       cwd: PROJECT_ROOT,
       encoding: "utf8",
-      timeout: CHECK_TIMEOUT_MS,
+      timeout: budget,
     });
     if (proc.error) {
       return { executed: false, exit_code: null, command, error: String(proc.error.message) };
@@ -114,21 +155,61 @@ function main(argv) {
     }
   }
 
+  // "nothing ran" is not "everything passed". Reporting both as `ok` meant a
+  // reader of completion_reports.log could not tell a green gate from a gate
+  // that never had anything to do — both looked like {"status":"ok","checks":{}}.
+  if (light) {
+    const report = {
+      ts: timestamp(),
+      status: "skipped",
+      checks: {},
+      reason:
+        "--post-tool-use runs no checks by design; it exists so a PostToolUse hook " +
+        "has something to call. The real gate is this script with no flag, at Stop.",
+    };
+    writeReport(report);
+    console.log(JSON.stringify(report));
+    return 0;
+  }
+
+  if (!required.length) {
+    const report = {
+      ts: timestamp(),
+      status: "skipped",
+      checks: {},
+      reason:
+        "No required_checks are configured, so nothing was verified. Add your " +
+        "test/lint commands to required_checks in .agent-security/policy.yaml — " +
+        "until then this gate approves everything.",
+    };
+    writeReport(report);
+    console.log(JSON.stringify(report));
+    return 0;
+  }
+
+  const startedAt = Date.now();
   const checks = {};
   for (const check of required) {
-    checks[check.name] = runCheck(check.name, check.command);
+    const remaining = TOTAL_BUDGET_MS - (Date.now() - startedAt);
+    checks[check.name] = runCheck(check.name, check.command, remaining);
   }
 
   const names = Object.keys(checks);
-  const allOk = names.length
-    ? names.every((n) => checks[n].executed && checks[n].exit_code === 0)
-    : true;
+  const allOk = names.every((n) => checks[n].executed && checks[n].exit_code === 0);
 
   const report = { ts: timestamp(), status: allOk ? "ok" : "blocked", checks };
-  if (!allOk && names.length) {
+  if (!allOk) {
     const failed = names.filter((n) => !(checks[n].executed && checks[n].exit_code === 0));
+    const starved = failed.filter((n) => /time budget was exhausted/.test(checks[n].error || ""));
     report.reason =
-      `Completion denied: checks failed or were not run: ${failed.join(", ")}.`;
+      `Completion denied: checks failed or were not run: ${failed.join(", ")}.` +
+      (starved.length
+        ? ` ${starved.join(", ")} ran out of time: the gate's budget is ` +
+          `${Math.round(TOTAL_BUDGET_MS / 1000)}s. If this suite legitimately needs longer, ` +
+          "raise BOTH the Stop hook's timeout in your harness config AND " +
+          "GUARDRAILS_CHECK_BUDGET_MS — raising only one puts you back to the hook " +
+          "being killed with no report."
+        : "");
   }
 
   writeReport(report);

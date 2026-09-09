@@ -2,6 +2,182 @@
 
 ## Unreleased
 
+### Bypass de comandos por opciones globales (corregido) — once reglas afectadas
+
+Lo encontró una corrida real del `SELF_TEST_PROMPT.md`, no un test del kit:
+
+```
+git commit --no-verify                             → deny  ✓
+git -c user.email=x -c user.name=y commit --no-verify → ALLOW ✗
+```
+
+Mismo comando, y `-c user.email=x` no es una evasión exótica: es la forma
+ordinaria de fijar la identidad del commit. El patrón era
+`git\s+commit\s+.*--no-verify`, que exige que `git` y `commit` estén
+pegados — y **casi ningún CLI funciona así**. Entre el programa y su subcomando
+van las opciones globales.
+
+Medido después: **once reglas** tenían el mismo agujero, no una.
+
+| Regla | Forma que la evadía |
+|---|---|
+| hook bypass | `git -c k=v commit --no-verify` |
+| force push | `git -c core.pager=cat push --force` |
+| git destructivo | `git -C /path reset --hard` |
+| push (ask) | `git --no-pager push` |
+| `docker push` | `docker --config=/tmp push` |
+| `npm publish` | `npm --registry=http://x publish` |
+| `npx` sin pinear | `npx --yes pkg@1` |
+| `artisan migrate` ×3 | `php -d memory_limit=1G artisan migrate` |
+| `composer remove` | `composer --no-interaction remove x` |
+| `twine upload` | `twine --repository x upload` |
+| `pip install --index-url` | `pip --quiet install --index-url http://x` |
+
+Una **parecía** aguantar: `git --git-dir=.git branch -D main` denegaba. Pero sólo
+porque el path terminaba en `.git`, así que `git branch -D` existía como
+substring. Coincidencia, no regla — con `--git-dir=/tmp/x` pasaba igual.
+
+El fix es un solo lugar: `THEN` en `stacks.js`, la pieza que reemplaza al `\s+`
+entre un programa y su subcomando. Es `[^;&|\n]*?` — una clase de caracteres
+simple, a propósito:
+
+- **Lineal.** Sin cuantificadores anidados, porque el matcher corre en cada tool
+  call. Medido con entradas adversariales (200 opciones, flags de 5000 chars,
+  20k chars sin estructura): peor caso **0.88ms** contra 5000ms de timeout.
+- **Sin mantenimiento.** No modela la sintaxis de opciones de cada CLI, así que
+  no se queda vieja cuando alguno agrega flags.
+- **No cruza comandos.** Excluir `;`, `&`, `|` y saltos de línea es lo que hace
+  que `git status; echo "commit --no-verify"` **no** sea un commit.
+
+### Y un agujero preexistente que salió al mirar: `git clean`
+
+Buscando el alcance apareció que `clean\s+-f` exigía que la `f` fuera el
+**último** carácter del flag. O sea: atrapaba `git clean -f` y dejaba pasar
+`git clean -fd`, `git clean -xdf` y `git clean --force` — que es como se escribe
+en la vida real. **La forma más común del comando destructivo nunca estuvo
+bloqueada.** Ahora `-[a-zA-Z]*f` cubre el bundle y la forma larga, y
+`branch --delete --force` (el sinónimo largo de `-D`) también.
+
+### Limitación conocida que queda documentada, no arreglada
+
+El motor compila **todos** los patrones con el flag `i`, así que `-D` también
+matchea `-d` y `git branch -d merged` —el borrado *seguro*, que se niega a
+tirar trabajo sin mergear— se deniega igual.
+
+El flag no es un error: es lo que atrapa `drop table users` en minúscula, y
+perder eso sería mucho peor que esta fricción. Arreglarlo bien requiere
+sensibilidad al case **por regla** en `policy.yaml`, que es una decisión propia.
+Mientras tanto, errar hacia denegar un borrado de branch es la dirección segura.
+Está escrito en el comentario de la regla, no descubierto por el próximo.
+
+### Guards para que la clase no vuelva
+
+- **Estructural**: un test recorre las 22 reglas (core + stacks) y falla si
+  alguna vuelve a exigir adyacencia programa/subcomando, nombrando el patrón.
+  Verificado por mutación: reintroduje `docker\s+push` y el test falló
+  citándolo. La **primera** versión de ese test no detectaba nada —era un regex
+  sobre regexes, sobre-escapado— y pasaba por vacío; lo expuso justamente la
+  corrida de mutación.
+- **De performance**: otro test mide el matching contra entradas adversariales y
+  falla si pasa de 500ms.
+- **En el self-test**: sección **A2** nueva, gemela de la E2 de rutas. Reejecuta
+  los comandos de la sección A escritos con una opción global adelante, más los
+  dos que **no** deben denegarse (`git clean -n`, y nombrar un comando sin
+  ejecutarlo). La próxima corrida los revisa en vez de redescubrirlos.
+
+`RULES.md` explica ahora cómo leer `[^;&|\n]*?` en la tabla, para que los
+patrones no parezcan ruido.
+
+
+### `policy.yaml` ya no anuncia controles que no existen
+
+De las siete secciones que generaba, **tres no las leía nadie**:
+`sensitive_tools`, `approval_required` y `completion_rules`. Se emitían en cada
+instalación, el loader las preservaba, y ninguna rama del motor ni del gate las
+consultaba. Se van las tres.
+
+El costo nunca fue el código muerto — fue la confianza. Alguien agrega una
+entrada a `approval_required`, no observa ningún cambio de comportamiento, y
+concluye razonablemente que **los guardrails no funcionan**. Es la peor
+conclusión posible, y era la correcta a partir de la evidencia que tenía. Ahora
+las cuatro secciones que quedan (`version`, `protected_paths`,
+`blocked_commands`, `required_checks`) afectan todas una decisión real.
+
+**Dos de ellas no deberían volver:**
+
+- `approval_required` listaba *conceptos*, no patrones matcheables:
+  `database_migration` no aparece nunca literalmente en un comando. Y
+  `blocked_commands` ya cubre cada una de esas categorías con un regex de verdad
+  y un motivo legible — `git push`, `php artisan migrate`, los destructivos de
+  cloud. Era una taxonomía al lado del mecanismo que la implementa.
+- `sensitive_tools` duplicaba el matcher del propio harness. E implementarla como
+  su nombre sugiere —un filtro sobre qué se evalúa— significaría que **una
+  herramienta no listada se saltea el motor entero**: fail-open dentro de la
+  pieza que existe para fallar cerrada. Sacarla es una mejora de seguridad en
+  expectativa, no sólo limpieza.
+
+**`completion_rules` puede volver como feature.** Describía algo real y útil:
+correr sólo los checks relevantes según qué cambió, que además ayudaría con el
+presupuesto del gate. Pero es una feature con decisiones propias (qué significa
+"cambió" en un hook `Stop`, correr todo si el diff no se puede determinar) y con
+un `require: []` hardcodeado que hoy está al revés. Vuelve por sus méritos y con
+sus tests, no como clave emitida esperando implementación.
+
+**Instalaciones existentes:** no se rompe nada. G4 significa que un `policy.yaml`
+instalado nunca se sobrescribe, y el loader **preserva** claves desconocidas sin
+fallar — verificado con un test. Un proyecto ya instalado conserva su archivo y
+las tres claves siguen tan inertes como siempre; sólo cambia lo que se genera de
+acá en adelante.
+
+La propiedad que hace seguro el cambio, y que se verifica en vez de afirmarse:
+**la suite del payload no se movió** (90 casos, iguales antes y después). Si
+alguna decisión del motor hubiera cambiado, ahí se vería.
+
+Con esto quedan cerrados los cinco puntos de la deuda heredada del port a Node.
+
+
+### El completion gate ya no puede fallar abierto, ni decir "ok" sin verificar nada
+
+Los dos problemas los mostró un `completion_reports.log` real, no un test.
+
+**1. `status: "ok"` con `checks: {}`.** Pasaba en dos casos distintos:
+`--post-tool-use` (que por diseño no corre ningún check) y un proyecto sin stack
+detectado (`required_checks` vacío). Quien leyera el log después veía un gate en
+verde donde nunca se había verificado nada.
+
+Los dos reportan ahora **`status: "skipped"`** con el motivo, porque "no
+verifiqué nada" no es "pasó todo". El caso del `required_checks` vacío además
+dice dónde agregar los checks, y que hasta entonces el gate aprueba todo.
+
+**2. El gate podía morir sin escribir reporte.** Cada check tenía 600s mientras
+los hook configs declaraban 60s de `Stop`. Con los 3 checks de un stack PHP el
+techo teórico eran **1800s contra 60s** — y un hook que el harness mata **no
+escribe reporte**, o sea el gate fallando *abierto*: lo único que un gate nunca
+debe hacer.
+
+- Presupuesto **total** (`TOTAL_BUDGET_MS`, 280s), y ningún check puede durar más
+  que lo que queda de él.
+- Los tres hook configs suben `Stop` de 60s a **300s**, que deja margen para
+  escribir el reporte (G7).
+- Agotar el presupuesto es un `blocked` que nombra qué no llegó a correr, con
+  exit 1. Falla cerrado y por escrito.
+- El motivo aclara que hay que subir **los dos** números si tu suite necesita
+  más tiempo: subir uno solo reproduce el bug original. Y hay un test que verifica
+  que el timeout del hook siga por encima del presupuesto — son un par, no dos
+  constantes independientes.
+
+Nota que queda documentada en el README del payload: un `exit_code: 0` de un
+check puede significar *salteado* y no *pasó*, porque los comandos generados
+degradan a propósito (`[ -x vendor/bin/phpunit ] && ... || echo "skipping"`). Es
+deliberado — el gate no debería fallar porque una herramienta no esté instalada —
+pero un reporte verde en una máquina sin el toolchain prueba menos de lo que
+parece. El `command` va en el reporte para poder distinguirlo.
+
+Con esto quedan resueltos los puntos 3, 4 y 5 de la deuda heredada del port. Los
+que siguen abiertos son el 1 y el 2: las tres claves de `policy.yaml` que no
+hacen nada (`sensitive_tools`, `approval_required`, `completion_rules`).
+
+
 ### Qué commitear, y el paso que le falta a quien clona
 
 Faltaba lo más básico: el kit escribía 26 archivos y no decía en ninguna parte

@@ -530,13 +530,14 @@ test("vscode-codex adapter maps camelCase tool names and filePath", () => {
   assert(d.action === "deny", `editing the policy must deny, got ${d.action} (${d.reason})`);
 });
 
-function runFinalCheck(dir, args = []) {
+function runFinalCheck(dir, args = [], env) {
   const script = path.join(dir, ".agent-security/final_check.js");
   try {
     const stdout = execFileSync("node", [script, ...args], {
       cwd: dir,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      env: env ? { ...process.env, ...env } : process.env,
     });
     return { code: 0, report: JSON.parse(stdout.trim()) };
   } catch (e) {
@@ -572,10 +573,73 @@ test("final_check.js --post-tool-use runs no checks (documented no-op)", () => {
     policyYaml: 'required_checks:\n  - name: boom\n    command: "node -e \\"process.exit(1)\\""\n',
   });
   const { code, report } = runFinalCheck(dir, ["--post-tool-use"]);
-  assert(code === 0, `light mode always exits 0 today, got ${code}`);
+  assert(code === 0, `light mode exits 0, got ${code}`);
+  assert(Object.keys(report.checks).length === 0, "light mode runs nothing");
+  // It runs nothing, so it must not look like a pass. Reporting `ok` with an
+  // empty `checks` object meant a reader of completion_reports.log could not
+  // tell a green gate from a gate that never had anything to do — seen for real
+  // in a target project's log.
+  assert(report.status === "skipped", `expected status "skipped", got ${JSON.stringify(report.status)}`);
+  assert(/runs no checks by design/.test(report.reason || ""), "and it must say so");
+});
+
+test("final_check.js reports skipped when no checks are configured", () => {
+  // The same misleading shape from a different cause: a project with no
+  // detected stack has an empty required_checks, and "verified nothing" is not
+  // "passed".
+  const dir = mkPayloadFixture("gate-nochecks", { policyYaml: "required_checks: []\n" });
+  const { code, report } = runFinalCheck(dir, []);
+  assert(code === 0, `nothing to verify is not a failure, got ${code}`);
+  assert(report.status === "skipped", `expected "skipped", got ${JSON.stringify(report.status)}`);
+  assert(/policy\.yaml/.test(report.reason || ""), "it must point at where to add checks");
+});
+
+test("final_check.js blocks instead of being killed when its budget runs out", () => {
+  // The gate used to give each check 600s while the harnesses declared a 60s
+  // hook timeout: a slow suite got the hook killed with NO report written at
+  // all, which is the gate failing open — the one thing it must never do.
+  const dir = mkPayloadFixture("gate-budget", {
+    policyYaml:
+      "required_checks:\n" +
+      '  - name: slow-one\n    command: "node -e \\"setTimeout(()=>{},3000)\\""\n' +
+      '  - name: slow-two\n    command: "node -e \\"setTimeout(()=>{},3000)\\""\n',
+  });
+  const { code, report } = runFinalCheck(dir, [], { GUARDRAILS_CHECK_BUDGET_MS: "1500" });
+  assert(code === 1, `an unverifiable gate must fail closed, got exit ${code}`);
+  assert(report.status === "blocked", `expected "blocked", got ${JSON.stringify(report.status)}`);
   assert(
-    Object.keys(report.checks).length === 0,
-    "light mode runs nothing — see the port spec's inherited-debt list"
+    /time budget was exhausted/.test(JSON.stringify(report.checks)),
+    "the starved check must say why it did not run"
+  );
+  assert(
+    /raise BOTH/.test(report.reason || ""),
+    "and the reason must name both knobs — raising only one recreates the original bug"
+  );
+});
+
+test("the shipped Stop hook timeout leaves room for the gate's budget", () => {
+  // These two numbers are a pair. If a Stop timeout ever drops below the gate's
+  // budget again, a slow suite goes back to being killed with no report.
+  const BUDGET_S = 280; // final_check.js's shipped default
+  const configs = [
+    ["templates/claude-code/settings.json", (j) => j.hooks.Stop],
+    ["templates/vscode-codex/hooks/security.json", (j) => j.hooks.Stop],
+    ["templates/antigravity/hooks.json", (j) => j["security-gate"].Stop],
+  ];
+  for (const [rel, pick] of configs) {
+    const j = JSON.parse(fs.readFileSync(path.join(KIT_ROOT, rel), "utf8"));
+    const timeouts = pick(j)
+      .flatMap((e) => (e.hooks ? e.hooks : [e]))
+      .map((h) => h.timeout);
+    assert(timeouts.length > 0, `${rel}: no Stop hook found`);
+    for (const t of timeouts) {
+      assert(t > BUDGET_S, `${rel}: Stop timeout ${t}s must exceed the gate's ${BUDGET_S}s budget`);
+    }
+  }
+  const gate = fs.readFileSync(path.join(KIT_ROOT, "templates/common/final_check.js"), "utf8");
+  assert(
+    new RegExp(`${BUDGET_S} \\* 1000`).test(gate),
+    "the gate's default budget changed — re-check it against the shipped Stop timeouts"
   );
 });
 
@@ -2016,6 +2080,30 @@ test("the summary tells the user to commit and to share the hooksPath step", () 
   assert(/README\.md/.test(out), "and point at where the full split is documented");
 });
 
+test("the self-test prompt covers both bypass classes it has found", () => {
+  // Two real runs of this prompt found two bypass classes the kit's own suite
+  // had missed: path shapes (`/c/...` reaching `~/.ssh`) and command shapes
+  // (`git -c k=v commit --no-verify`). Both now have a dedicated section, so
+  // the next run re-checks them instead of rediscovering them.
+  const prompt = fs.readFileSync(path.join(KIT_ROOT, "templates/common/SELF_TEST_PROMPT.md"), "utf8");
+  assert(/### A2\./.test(prompt), "the command-shape section is missing");
+  assert(/### E2\./.test(prompt), "the path-shape section is missing");
+  for (const probe of [
+    "git -c user.email=x", // global option before the subcommand
+    "git clean -fd", // bundled short flags
+    "/cygdrive/", // the Cygwin path spelling
+    'git status; echo "commit --no-verify"', // naming is not running
+  ]) {
+    assert(prompt.includes(probe), `the prompt no longer probes: ${probe}`);
+  }
+  // Numbering must stay gap-free, or an agent working the list loses its place.
+  const rows = [...prompt.matchAll(/^(\d+)\. /gm)].map((m) => Number(m[1]));
+  const maxRow = Math.max(...rows);
+  for (let n = 7; n <= maxRow; n++) {
+    assert(rows.includes(n), `the prompt skips row ${n}`);
+  }
+});
+
 test("payload docs explain what to commit and what stays local", () => {
   const readme = fs.readFileSync(path.join(KIT_ROOT, "templates/common/README.md"), "utf8");
   const post = fs.readFileSync(path.join(KIT_ROOT, "templates/common/POST_INSTALL.md"), "utf8");
@@ -2027,6 +2115,129 @@ test("payload docs explain what to commit and what stays local", () => {
     /git config core\.hooksPath \.husky/.test(post),
     "POST_INSTALL must give the exact per-developer command"
   );
+});
+
+test("policy.yaml announces no control it does not have", () => {
+  // Three sections used to be emitted that nothing read: `sensitive_tools`,
+  // `approval_required`, `completion_rules`. The cost was never the dead code —
+  // it was that someone adds an entry, sees no behavior change, and reasonably
+  // concludes the guardrails do not work. Every section must affect a decision.
+  const { buildPolicyYaml } = require(path.join(KIT_ROOT, "generate.js"));
+  const dead = ["sensitive_tools", "approval_required", "completion_rules"];
+  for (const stack of Object.keys(STACK_MARKERS)) {
+    const yaml = buildPolicyYaml([stack]);
+    for (const key of dead) {
+      assert(
+        !yaml.includes(`${key}:`),
+        `stack "${stack}": policy.yaml still emits ${key}, which nothing reads. ` +
+          `See Tasks/policy-yaml-dead-keys/00-overview.md before re-adding it.`
+      );
+    }
+    // The four that remain are the four that do something.
+    for (const key of ["version:", "protected_paths:", "blocked_commands:", "required_checks:"]) {
+      assert(yaml.includes(key), `stack "${stack}": policy.yaml lost ${key}`);
+    }
+  }
+});
+
+test("a policy.yaml that still has the removed keys keeps loading", () => {
+  // G4 means an installed policy.yaml is never overwritten, so every existing
+  // install still carries the three keys. Removing them from the generator must
+  // not break those files: the loader preserves unknown keys and they stay as
+  // inert as they always were.
+  const { loadPolicy } = require(path.join(KIT_ROOT, "templates/common/policy_loader.js"));
+  const dir = mkTmp("policy-legacy-keys");
+  const p = path.join(dir, "policy.yaml");
+  fs.writeFileSync(
+    p,
+    [
+      "version: 1",
+      'protected_paths:\n  - ".env"',
+      "blocked_commands: []",
+      "sensitive_tools:\n  - write_file",
+      "approval_required:\n  - production",
+      'required_checks:\n  - name: t\n    command: "true"',
+      'completion_rules:\n  - changed_extensions: [".js"]\n    require: [t]',
+      "",
+    ].join("\n\n")
+  );
+  const pol = loadPolicy(p);
+  assert(pol.required_checks.length === 1, "the live sections must still parse");
+  assertDeep(pol.sensitive_tools, ["write_file"], "removed keys are preserved, not rejected");
+  assert("completion_rules" in pol, "an old policy.yaml must not become unloadable");
+});
+
+test("no blocked_command assumes a program and its subcommand are adjacent", () => {
+  // The bug class a real self-test run surfaced: `\bgit\s+commit\b` requires
+  // the two to be adjacent, and almost no CLI works that way —
+  // `git -c user.email=x commit --no-verify` walked straight through. Eleven
+  // rules had it. This is the structural guard so rule #12 cannot bring it
+  // back: between a program name and its subcommand, use `THEN`, not `\s+`.
+  const { CORE_BLOCKED_COMMANDS } = require(path.join(KIT_ROOT, "generate.js"));
+  const { STACKS } = require(path.join(KIT_ROOT, "stacks.js"));
+
+  const rules = [...CORE_BLOCKED_COMMANDS];
+  for (const s of Object.values(STACKS)) rules.push(...(s.extraBlocked || []));
+
+  // Written as plain string scanning, not a regex over regexes: the first
+  // version of this check was a meta-regex, it was over-escaped, and it matched
+  // NOTHING — so it passed while detecting nothing at all. A mutation run
+  // against the old patterns is what exposed that.
+  //
+  // The broken shape is `<name>\s+<something>` where the something is not `.`:
+  // `\s+.*` is the tolerant form and is fine (`mvn\s+.*\bdeploy`), while
+  // `\s+push`, `\s+install` and `\s+\S+` all demand adjacency.
+  function assumesAdjacency(pattern) {
+    let i = 0;
+    while ((i = pattern.indexOf("\\s+", i)) !== -1) {
+      const endsWithName = /[a-z0-9:_-]$/i.test(pattern.slice(0, i));
+      const next = pattern.charAt(i + 3);
+      if (endsWithName && next && next !== ".") return true;
+      i += 3;
+    }
+    return false;
+  }
+
+  // Exempt: rules where `\s+` separates a command from its own flags or
+  // operands rather than from a subcommand, so there is nothing to slip in.
+  const exempt = (p) =>
+    p.includes("\\brm\\s+") || // the flags ARE the target here
+    /DROP|DELETE|TRUNCATE/.test(p) || // SQL keywords, not program/subcommand
+    p.includes("\\bcurl\\b") ||
+    p.includes("aws|gcloud|az");
+
+  const offenders = rules.map((r) => r.pattern).filter((p) => assumesAdjacency(p) && !exempt(p));
+
+  assert(
+    offenders.length === 0,
+    `these patterns still require program/subcommand adjacency, so global options ` +
+      `bypass them — use THEN from stacks.js:\n  ` + offenders.join("\n  ")
+  );
+});
+
+test("every blocked_command matches in well under the hook timeout", () => {
+  // The engine compiles and runs all of these on every tool call, so a
+  // pathological command must not stall the hook. `THEN` is a plain lazy
+  // character class rather than a model of option syntax precisely so this
+  // stays linear — measured, not asserted.
+  const { CORE_BLOCKED_COMMANDS } = require(path.join(KIT_ROOT, "generate.js"));
+  const { STACKS } = require(path.join(KIT_ROOT, "stacks.js"));
+  const rules = [...CORE_BLOCKED_COMMANDS];
+  for (const s of Object.values(STACKS)) rules.push(...(s.extraBlocked || []));
+  const compiled = rules.map((r) => new RegExp(r.pattern, "i"));
+
+  const adversarial = [
+    "git " + "-c a=b ".repeat(200) + "commit --no-verify",
+    "git " + "-".repeat(2000) + " commit",
+    "php " + "-d k=v ".repeat(300) + "artisan migrate",
+    "a".repeat(20000),
+  ];
+  for (const cmd of adversarial) {
+    const started = Date.now();
+    for (const p of compiled) p.test(cmd);
+    const ms = Date.now() - started;
+    assert(ms < 500, `matching took ${ms}ms on a ${cmd.length}-char command — possible ReDoS`);
+  }
 });
 
 test("package.json still declares no dependencies (G1)", () => {
