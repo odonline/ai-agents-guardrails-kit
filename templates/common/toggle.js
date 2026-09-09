@@ -224,7 +224,7 @@ function printDisablePlan(plan, git) {
     say("");
     say("  Ese archivo tiene tu config y la nuestra en el mismo lugar. Renombrarlo se");
     say("  llevaría la tuya puesta, así que no lo toco. Para desengancharlo a mano");
-    say("  saká los bloques de hooks que apuntan a .agent-security/ y a pretooluse.");
+    say("  sacá los bloques de hooks que apuntan a .agent-security/ y a pretooluse.");
     if (plan.keepModified.some((r) => r.harness === "antigravity")) {
       say("");
       say("  Para antigravity alcanza con poner \"enabled\": false en .agents/hooks.json:");

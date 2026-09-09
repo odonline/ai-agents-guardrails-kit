@@ -207,7 +207,7 @@ function printPlan(plan, gitSteps, gitignore, wired) {
     say("  tienen cambios tuyos:");
     wired.forEach((p) => say(`    - ${p}`));
     say("");
-    say("  Saká a mano los bloques de hooks que apuntan a .agent-security/ y a");
+    say("  Sacá a mano los bloques de hooks que apuntan a .agent-security/ y a");
     say("  pretooluse. Hasta que lo hagas, cada tool call va a ejecutar un hook que");
     say("  apunta a un .agent-security/ que ya no existe: los adapters devuelven");
     say("  'deny', o sea que te va a denegar TODO en vez de dejar pasar todo.");
@@ -379,7 +379,7 @@ async function main(argv) {
   if (stillWiredAfter.length) {
     console.log("⚠ LOS GUARDRAILS SIGUEN ACTIVOS.");
     stillWiredAfter.forEach((p) => console.log(`    - ${p} todavía engancha el motor`));
-    console.log("  Saká esos bloques de hooks a mano para terminar de desinstalar.");
+    console.log("  Sacá esos bloques de hooks a mano para terminar de desinstalar.");
   } else {
     console.log("✓ Guardrails desactivados: no quedó ningún hook enganchado.");
   }
