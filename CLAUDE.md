@@ -24,10 +24,6 @@ matters is *when* each runs, not what it is written in:
   `templates/common/vendor/` so no target project ever runs `npm install`
   to get guardrails.
 
-The runtime used to be Python; it was ported to Node (see
-`Tasks/policy-engine-node-port/`). Nothing in the payload requires pip, a
-virtualenv, or pytest any more — only `node` on the `PATH`.
-
 ## Commands
 
 ```bash
