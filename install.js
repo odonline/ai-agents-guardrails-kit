@@ -542,16 +542,78 @@ function checkNodeRuntime() {
   return { version, major, majorOk: Number.isFinite(major) && major >= MIN_PAYLOAD_NODE_MAJOR, onPath };
 }
 
+/**
+ * Does git currently ignore the vendored engine?
+ *
+ * `git check-ignore` is the only authority worth asking: it accounts for the
+ * root .gitignore, nested ones, `.git/info/exclude` and `core.excludesFile`, in
+ * git's own precedence order. Reimplementing that by parsing .gitignore
+ * ourselves would be its own bug farm, and getting it subtly wrong here means
+ * reporting "committable" about something that is not.
+ *
+ * true = ignored, false = not ignored, null = unknowable (not a git repo, or no
+ * git on PATH). null is not false: we say nothing rather than promise anything.
+ */
+function vendorIgnoredStatus(target) {
+  try {
+    execSync("git check-ignore -q .agent-security/vendor/js-yaml.js", { cwd: target, stdio: "ignore" });
+    return true; // exit 0 — a pattern matches it
+  } catch (e) {
+    if (e && e.status === 1) return false; // exit 1 — no pattern matches
+    return null; // exit 128 / ENOENT — not a repo, or git unavailable
+  }
+}
+
 function ensureGitignore(target) {
   const gi = path.join(target, ".gitignore");
-  const lines = [".agent-security/audit.log", ".agent-security/completion_reports.log", "*.new"];
+  const lines = [
+    ".agent-security/audit.log",
+    ".agent-security/completion_reports.log",
+    "*.new",
+    // The vendored js-yaml has to survive `git add`, and in three ecosystems it
+    // does not by default: PHP/Composer, Go and Ruby all ship a `vendor` line,
+    // and an unanchored one matches a directory of that name at ANY depth —
+    // including ours. Measured against the seven spellings in common use:
+    // `vendor`, `vendor/`, `**/vendor` and `**/vendor/**` all swallow
+    // `.agent-security/vendor/`; only the root-anchored `/vendor` forms do not.
+    //
+    // The consequence is not cosmetic. The files get written, the installer
+    // reports success, the developer commits — and everyone who clones gets an
+    // engine that cannot require its own YAML parser, at which point the adapter
+    // correctly fails closed (G2) and denies EVERY tool call, `git status`
+    // included. A whole team blocked by a missing file nobody was told about.
+    //
+    // Two negations, not one. `!.agent-security/vendor` re-includes the
+    // directory so git descends into it at all — without it, a `vendor/`
+    // pattern keeps the directory excluded and nothing inside can ever be
+    // re-included. `!.agent-security/vendor/**` then covers the patterns that
+    // match the files directly rather than the directory (`**/vendor/**`),
+    // which the directory line alone does not fix. Verified: together they
+    // clear all six biting spellings; separately, each leaves one open.
+    //
+    // Emitted unconditionally, not only when a `vendor` pattern is present. A
+    // negation that matches nothing is two inert lines; a missing one is a
+    // blocked team — and the risk usually arrives *after* install day, when
+    // someone adds a PHP or Go component and its .gitignore along with it.
+    "# The guardrail engine ships a vendored js-yaml that must stay committable:",
+    "# an unanchored `vendor` rule (PHP, Go, Ruby) would swallow it, and without",
+    "# it a fresh clone denies every tool call.",
+    "!.agent-security/vendor",
+    "!.agent-security/vendor/**",
+  ];
   let existing = "";
   const preexisting = fs.existsSync(gi);
   if (preexisting) existing = fs.readFileSync(gi, "utf8");
-  const missing = lines.filter((l) => !existing.includes(l));
+  // Line-exact, not substring. `!.agent-security/vendor` is a prefix of
+  // `!.agent-security/vendor/**`, so an `includes()` test would call the first
+  // "already present" whenever the second is — silently skipping the line that
+  // does the actual re-including for `vendor/`-style patterns.
+  const present = new Set(existing.split(/\r?\n/).map((l) => l.trim()));
+  const missing = lines.filter((l) => !present.has(l));
   if (missing.length) {
     fs.appendFileSync(gi, (existing.endsWith("\n") || existing === "" ? "" : "\n") + missing.join("\n") + "\n");
-    console.log(`  ✓ ${rel(gi)} actualizado (${missing.length} entradas)`);
+    const entries = missing.filter((l) => !l.startsWith("#")).length;
+    console.log(`  ✓ ${rel(gi)} actualizado (${entries} entradas)`);
     // Record only what we actually appended. Lines the project already had are
     // not ours to remove on uninstall.
     MANIFEST.gitignore.linesAdded = missing;
@@ -559,6 +621,18 @@ function ensureGitignore(target) {
     // a .gitignore we created leaves an empty file behind, which is leftover
     // junk; reverting them from one the project already had must not.
     MANIFEST.gitignore.created = !preexisting;
+  }
+  // Measure, do not predict. The two negations above clear every spelling we
+  // know of, but a .gitignore nested inside .agent-security/, or something
+  // exotic, can still win — and shipping an uncommittable engine while printing
+  // a ✓ is exactly the silent failure this block exists to prevent. Ask git.
+  if (vendorIgnoredStatus(target) === true) {
+    console.log(
+      `  ⚠ git SIGUE ignorando .agent-security/vendor/ — el motor no se va a commitear.\n` +
+        `     Quien clone el repo queda con un motor que no carga, y el hook deniega\n` +
+        `     TODAS las tool calls, 'git status' incluido. Averiguá qué regla lo tapa:\n` +
+        `       git check-ignore -v .agent-security/vendor/js-yaml.js`
+    );
   }
   return missing;
 }

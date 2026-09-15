@@ -1905,7 +1905,13 @@ const HISTORY_MUTATING = [
 ];
 
 // Read-only, plus the one write the kit is explicitly contracted to make.
-const ALLOWED = ["config", "rev-parse", "remote", "status", "log", "show", "diff", "ls-files", "worktree"];
+// `check-ignore` answers "would git ignore this path?" and writes nothing —
+// neither the index nor the object store nor config. It is how the installer
+// verifies that the vendored engine is actually committable instead of
+// assuming it (see ensureGitignore).
+const ALLOWED = [
+  "config", "rev-parse", "remote", "status", "log", "show", "diff", "ls-files", "worktree", "check-ignore",
+];
 
 function gitCallsIn(source) {
   const calls = [];
@@ -2244,6 +2250,166 @@ test("package.json still declares no dependencies (G1)", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(KIT_ROOT, "package.json"), "utf8"));
   const deps = Object.keys(pkg.dependencies || {});
   assert(deps.length === 0, `expected no dependencies, found: ${deps.join(", ")}`);
+});
+
+// --- the vendored engine must stay committable -----------------------------
+//
+// PHP/Composer, Go and Ruby projects all ignore `vendor`, and an unanchored
+// pattern matches a directory of that name at any depth — including
+// .agent-security/vendor/. When that happens the install looks successful and
+// every teammate who clones gets an engine that cannot load its YAML parser,
+// so the adapter fails closed and denies every tool call. Asserted through
+// `git check-ignore` rather than by reading the file, because git's precedence
+// and re-inclusion rules are the thing under test, not our idea of them.
+
+function vendorIsIgnored(dir) {
+  try {
+    execFileSync("git", ["check-ignore", "-q", ".agent-security/vendor/js-yaml.js"], {
+      cwd: dir,
+      stdio: "ignore",
+    });
+    return true;
+  } catch (e) {
+    if (e && e.status === 1) return false;
+    throw new Error(`git check-ignore failed unexpectedly (status ${e && e.status})`);
+  }
+}
+
+test("installed vendor/ stays committable under every biting gitignore pattern", () => {
+  const dir = mkTmp("gitignore-vendor");
+  writeFixtureFiles(dir, STACK_MARKERS.php());
+  gitInit(dir);
+  // All four spellings that were measured to swallow .agent-security/vendor/,
+  // at once: whichever negation is missing, one of these still matches.
+  fs.writeFileSync(path.join(dir, ".gitignore"), "vendor\nvendor/\n**/vendor\n**/vendor/**\n");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "php", "--git-hooks", "false", "--ci", "none", "--yes"]);
+
+  assert(
+    !vendorIsIgnored(dir),
+    "git still ignores .agent-security/vendor/ — the engine would never be committed"
+  );
+  const gi = fs.readFileSync(path.join(dir, ".gitignore"), "utf8");
+  assert(/^!\.agent-security\/vendor$/m.test(gi), "the directory re-inclusion line must be written");
+  assert(/^!\.agent-security\/vendor\/\*\*$/m.test(gi), "the contents re-inclusion line must be written");
+  // The project's own rules are still theirs.
+  assert(/^vendor\/$/m.test(gi), "must not remove or rewrite the project's own vendor rule");
+});
+
+test("vendor negations survive a reinstall without duplicating", () => {
+  // The membership test is line-exact precisely because `!.agent-security/vendor`
+  // is a prefix of `!.agent-security/vendor/**`; a substring test would call the
+  // shorter line present whenever the longer one is, and skip it.
+  const dir = mkTmp("gitignore-vendor-reinstall");
+  writeFixtureFiles(dir, STACK_MARKERS.php());
+  gitInit(dir);
+  fs.writeFileSync(path.join(dir, ".gitignore"), "vendor/\n");
+  const args = ["--agents", "claude-code", "--stacks", "php", "--git-hooks", "false", "--ci", "none", "--yes"];
+  runInstall(dir, args);
+  runInstall(dir, args);
+
+  const lines = fs.readFileSync(path.join(dir, ".gitignore"), "utf8").split(/\r?\n/);
+  const dirLine = lines.filter((l) => l.trim() === "!.agent-security/vendor").length;
+  const allLine = lines.filter((l) => l.trim() === "!.agent-security/vendor/**").length;
+  assertDeep([dirLine, allLine], [1, 1], "each negation must appear exactly once after a reinstall");
+  assert(!vendorIsIgnored(dir), "still committable after reinstalling");
+});
+
+test("a project that hand-added only the contents negation still gets the directory one", () => {
+  // The exact case the line-exact membership test exists for. Someone fixing
+  // this by hand writes `!.agent-security/vendor/**` and stops; a substring
+  // check then sees `!.agent-security/vendor` inside that line, calls it
+  // present, and skips the one line that makes git descend into the directory
+  // at all — leaving the engine just as uncommittable as before.
+  const dir = mkTmp("gitignore-vendor-partial");
+  writeFixtureFiles(dir, STACK_MARKERS.php());
+  gitInit(dir);
+  fs.writeFileSync(path.join(dir, ".gitignore"), "vendor/\n!.agent-security/vendor/**\n");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "php", "--git-hooks", "false", "--ci", "none", "--yes"]);
+
+  const gi = fs.readFileSync(path.join(dir, ".gitignore"), "utf8");
+  assert(/^!\.agent-security\/vendor$/m.test(gi), "the directory line must be added even though a longer line contains it");
+  assert(!vendorIsIgnored(dir), "the engine must end up committable");
+});
+
+test("installer warns when the vendored engine is still ignored", () => {
+  // A .gitignore nested inside .agent-security/ outranks the root one, so our
+  // negations lose. The installer must say so instead of printing a ✓ over an
+  // engine that will never be committed.
+  const dir = mkTmp("gitignore-vendor-warn");
+  writeFixtureFiles(dir, STACK_MARKERS.php());
+  gitInit(dir);
+  fs.mkdirSync(path.join(dir, ".agent-security"), { recursive: true });
+  fs.writeFileSync(path.join(dir, ".agent-security", ".gitignore"), "vendor\n");
+
+  const out = runInstall(dir, [
+    "--agents", "claude-code", "--stacks", "php", "--git-hooks", "false", "--ci", "none", "--yes",
+  ]);
+  assert(vendorIsIgnored(dir), "fixture must actually leave the vendor dir ignored");
+  assert(/SIGUE ignorando/.test(out), "expected a warning that the engine will not be committed");
+  assert(/git check-ignore -v/.test(out), "the warning must tell the user how to find the offending rule");
+});
+
+test("uninstall removes the vendor negations it added", () => {
+  const dir = mkTmp("gitignore-vendor-uninstall");
+  writeFixtureFiles(dir, STACK_MARKERS.php());
+  gitInit(dir);
+  fs.writeFileSync(path.join(dir, ".gitignore"), "vendor/\n");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "php", "--git-hooks", "false", "--ci", "none", "--yes"]);
+  runUninstall(dir, ["--yes"]);
+
+  const gi = fs.readFileSync(path.join(dir, ".gitignore"), "utf8");
+  assert(!/agent-security\/vendor/.test(gi), "our negation lines must be gone");
+  assert(!/guardrail engine ships/.test(gi), "our explanatory comment must be gone too");
+  assert(/^vendor\/$/m.test(gi), "the project's own rule must stay");
+});
+
+test("every adapter names the missing vendored parser instead of a generic load error", () => {
+  // The symptom of a swallowed .agent-security/vendor/ is every tool call
+  // denied, `git status` included, in someone else's clone. A reason that says
+  // only "could not load the policy engine" leaves them with nothing to pull
+  // on; naming the file and the `vendor` gitignore cause is the whole fix.
+  const dir = mkTmp("adapter-vendor-msg");
+  writeFixtureFiles(dir, STACK_MARKERS.php());
+  runInstall(dir, [
+    "--agents", "claude-code,vscode-codex,antigravity",
+    "--stacks", "php", "--git-hooks", "false", "--ci", "none", "--yes",
+  ]);
+  fs.rmSync(path.join(dir, ".agent-security", "vendor"), { recursive: true, force: true });
+
+  for (const agent of Object.keys(ADAPTERS)) {
+    const d = adapterDecision(agent, runAdapter(dir, agent, payloadFor(agent, { command: "git status" })));
+    assert(d.action === "deny", `${agent}: must still fail closed (G2), got ${d.action}`);
+    assert(
+      /vendor\/js-yaml\.js/.test(d.reason),
+      `${agent}: the reason must name the missing file, got: ${d.reason}`
+    );
+    assert(
+      /git check-ignore/.test(d.reason),
+      `${agent}: the reason must tell the user how to confirm the cause, got: ${d.reason}`
+    );
+  }
+});
+
+test("a half-removed install and a broken engine get their own distinct reasons", () => {
+  // Three different absences, three different things to do about them. If they
+  // all collapsed to one string the diagnostic would be worthless.
+  const gone = mkTmp("adapter-msg-gone");
+  writeFixtureFiles(gone, STACK_MARKERS.node());
+  runInstall(gone, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "false", "--ci", "none", "--yes"]);
+  fs.rmSync(path.join(gone, ".agent-security"), { recursive: true, force: true });
+  const d1 = adapterDecision("claude-code", runAdapter(gone, "claude-code", { tool_name: "Bash", tool_input: { command: "ls" } }));
+  assert(d1.action === "deny", "must fail closed when .agent-security/ is gone");
+  assert(/half-removed/.test(d1.reason), `expected the half-removed wording, got: ${d1.reason}`);
+  assert(!/js-yaml/.test(d1.reason), "must not blame the parser when the whole directory is gone");
+
+  const broken = mkTmp("adapter-msg-broken");
+  writeFixtureFiles(broken, STACK_MARKERS.node());
+  runInstall(broken, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "false", "--ci", "none", "--yes"]);
+  fs.writeFileSync(path.join(broken, ".agent-security", "policy_engine.js"), "syntax error here(((\n");
+  const d2 = adapterDecision("claude-code", runAdapter(broken, "claude-code", { tool_name: "Bash", tool_input: { command: "ls" } }));
+  assert(d2.action === "deny", "must fail closed when the engine will not parse");
+  assert(!/js-yaml/.test(d2.reason), "must not blame the parser when it is present");
+  assert(!/half-removed/.test(d2.reason), "must not claim a half-removed install when the directory is there");
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

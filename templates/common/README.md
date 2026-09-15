@@ -115,13 +115,29 @@ Raising only one puts you back where you started.
 if this stays local, a teammate's agent runs unrestricted on the same repo, and
 the risk was never "my agent" — it was "an agent".
 
-Three pieces do not work at all unless they are committed:
+Four pieces do not work at all unless they are committed:
 
 | Path | Why it must be tracked |
 |---|---|
+| `.agent-security/vendor/` | The engine's YAML parser. Without it the engine cannot load, and the adapter then fails closed and denies **every** tool call — `git status` included. See the warning below |
 | `.husky/pre-commit`, `.husky/pre-push`, and any chain shims | That is how husky works — they are repo content. The chain shims are written without absolute paths specifically so they can be committed |
 | `.github/workflows/security.yml` or `.gitlab-ci.yml` | Uncommitted, the pipeline does not exist. CI plus branch protection is the *real* enforcement layer; the git hooks are convenience |
 | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` | The operating contract for the whole team's agents, not just yours |
+
+> **`vendor/` is a trap in PHP, Go and Ruby projects.** Those ecosystems ship a
+> `vendor` line in `.gitignore`, and an unanchored one matches a directory of
+> that name at *any* depth — so it silently swallows `.agent-security/vendor/`
+> too. The install still reports success; the breakage only appears in someone
+> else's clone, as an agent that refuses to do anything. The installer appends
+> `!.agent-security/vendor` and `!.agent-security/vendor/**` to undo this, and
+> then asks git whether it worked. If it says otherwise, it tells you. To check
+> by hand at any time:
+>
+> ```bash
+> git check-ignore -v .agent-security/vendor/js-yaml.js
+> ```
+>
+> No output means you are fine.
 
 `policy.yaml` belongs in git too: it is the shared rule set, and changing a rule
 should be reviewed like any other change. `install-manifest.json` as well —

@@ -44,14 +44,46 @@ function denyAndExit(reason) {
   process.exit(0);
 }
 
+/**
+ * Why the engine would not load, phrased so the person staring at a blocked
+ * session can act on it. Presentation only — no policy decision is made here
+ * (G3); the decision was already "deny".
+ *
+ * Naming the specific absence matters because the most common one has a
+ * non-obvious cause. `.agent-security/vendor/` holds the engine's YAML parser,
+ * and PHP, Go and Ruby projects ignore `vendor` at any depth, so that one
+ * directory can be missing from a fresh clone while every other file is
+ * present. The symptom is every tool call denied, including `git status`, with
+ * nothing to pull on.
+ */
+function engineLoadFailureReason(err) {
+  if (!fs.existsSync(ENGINE_DIR)) {
+    return (
+      "Guardrail hook could not load the policy engine: .agent-security/ does not exist. " +
+      "This install looks half-removed — reinstall the kit, or remove the hook entry " +
+      "that points here. Denying until then."
+    );
+  }
+  if (!fs.existsSync(path.join(ENGINE_DIR, "vendor", "js-yaml.js"))) {
+    return (
+      "Guardrail hook could not load the policy engine: its vendored YAML parser " +
+      "(.agent-security/vendor/js-yaml.js) is missing. That directory is usually absent " +
+      "because it was never committed — an unanchored `vendor` rule in .gitignore, standard " +
+      "in PHP, Go and Ruby projects, hides it. Check with " +
+      "`git check-ignore -v .agent-security/vendor/js-yaml.js`. Denying until then."
+    );
+  }
+  return `Guardrail hook could not load the policy engine (${(err && err.message) || err}); defaulting to deny.`;
+}
+
 function main() {
   let engine;
   try {
     engine = require(path.join(ENGINE_DIR, "policy_engine.js"));
   } catch (e) {
     // The engine being absent is exactly what a half-removed install looks
-    // like. Deny rather than die.
-    denyAndExit("Guardrail hook could not load the policy engine; defaulting to deny.");
+    // like. Deny rather than die — but say which absence.
+    denyAndExit(engineLoadFailureReason(e));
   }
 
   let raw;

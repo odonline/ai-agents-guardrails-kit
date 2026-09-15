@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+### El motor vendorizado no se commiteaba en proyectos PHP/Go/Ruby (corregido)
+
+Esos tres ecosistemas traen una línea `vendor` en su `.gitignore`, y **sin
+anclar matchea un directorio con ese nombre a cualquier profundidad** — o sea
+que también se comía `.agent-security/vendor/`, donde vive el js-yaml
+vendorizado del motor.
+
+Medido sobre las siete formas de escribirlo que se usan en la práctica:
+
+| Patrón | ¿Se comía el vendor del kit? |
+|---|---|
+| `vendor`, `vendor/`, `**/vendor`, `**/vendor/**` | **sí** |
+| `/vendor`, `/vendor/`, `vendor/**` | no (anclados al root) |
+
+La consecuencia no es cosmética. El instalador escribía los archivos, reportaba
+éxito, y el desarrollador commiteaba — pero quien clonaba recibía un motor que
+no podía cargar su propio parser de YAML. El adapter entonces falla cerrado
+(G2, correcto) y **deniega TODAS las tool calls, `git status` incluido**. Un
+equipo entero trabado por un archivo faltante del que nadie avisó.
+
+El instalador ahora agrega dos negaciones al `.gitignore` del proyecto:
+
+```gitignore
+!.agent-security/vendor
+!.agent-security/vendor/**
+```
+
+Son dos y no una. La primera re-incluye el *directorio*, sin lo cual git ni
+siquiera desciende a él y nada de adentro puede recuperarse; la segunda cubre
+los patrones que matchean los archivos directamente (`**/vendor/**`). Verificado:
+juntas limpian las seis formas que muerden; por separado, cada una deja una
+abierta.
+
+Y después de escribirlas, **le pregunta a git si funcionó**
+(`git check-ignore`) en vez de asumirlo: un `.gitignore` anidado dentro de
+`.agent-security/` todavía le gana al del root, y ahí el instalador avisa en vez
+de imprimir un ✓ sobre un motor que nunca se va a commitear.
+
+Para revisarlo a mano en un proyecto ya instalado:
+
+```bash
+git check-ignore -v .agent-security/vendor/js-yaml.js
+```
+
+Sin salida = está bien. Si sale algo, agregá las dos líneas al final del
+`.gitignore` (el orden importa: git se queda con el último patrón que matchea).
+
+**Los tres adapters ahora nombran la ausencia concreta** en vez de decir sólo
+"could not load the policy engine". Quien caiga en esto ve un agente que deniega
+todo y necesita un hilo del cual tirar, no una categoría. Tres ramas distintas:
+falta `.agent-security/` entero (instalación a medio sacar), falta
+`vendor/js-yaml.js` (el caso de arriba, con el comando de diagnóstico incluido en
+el mensaje), o el motor está presente y no parsea (se incluye el error real).
+
 ### Bypass de comandos por opciones globales (corregido) — once reglas afectadas
 
 Lo encontró una corrida real del `SELF_TEST_PROMPT.md`, no un test del kit:
