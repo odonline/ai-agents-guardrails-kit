@@ -36,7 +36,7 @@ most common failure mode here, and every spec must state which side it touches.
 | | **Kit-side** | **Payload** |
 |---|---|---|
 | What | The installer/generator | What gets copied into target projects |
-| Files | `install.js`, `stacks.js`, `generate.js`, `docs.js`, `test/install.test.js`, `.gitlab-ci.yml`, root `README.md`/`CONTRIBUTING.md`/`CHANGELOG.md`/`RULES.md`/`CLAUDE.md` | everything under `templates/**` |
+| Files | `install.js`, `stacks.js`, `generate.js`, `docs.js`, `test/install.test.js`, `.gitlab-ci.yml`, root `README.md`/`CONTRIBUTING.md`/`HOWTO.md`/`CHANGELOG.md`/`RULES.md`/`CLAUDE.md`/`Docs/**` | everything under `templates/**` |
 | Runs | Once, on a developer's machine | On every agent tool call, in someone else's repo |
 | Audience | Contributors to this kit | Agents and developers in installed projects |
 | Language | Console output in **Spanish** | Docs in **English** |
@@ -82,8 +82,7 @@ corresponding contracts and hard stops.
 
 ## Runtime Target: Node (port complete)
 
-**Done as of 2026-08-31.** The runtime engine was ported from Python to Node and
-the `.py` files are deleted. The kit is a single-language project now: everything
+The kit is a single-language project now: everything
 is JavaScript, and the distinction that matters is kit-side vs payload, not
 language.
 
@@ -207,8 +206,9 @@ Payload docs (all English):
 - `templates/common/SELF_TEST_PROMPT.md` — any command it tells the agent to run.
 - `templates/common/{AGENTS,CLAUDE,GEMINI}.md` — check for engine paths.
 
-Kit docs: root `CLAUDE.md`, `CONTRIBUTING.md`, `README.md`, `CHANGELOG.md`, and
-`RULES.md` (via `node docs.js`, never by hand).
+Kit docs: root `CLAUDE.md`, `CONTRIBUTING.md`, `HOWTO.md`, `README.md`,
+`CHANGELOG.md`, `Docs/**`, and `RULES.md` (via `node docs.js`, never by
+hand).
 
 Behavior parity (G14): the Python suite has 24 named test cases covering blocked
 commands, path escape, shell-token path matching, ignore-file handling
@@ -258,10 +258,15 @@ Cited by ID in specs, tasks, and hard stops.
   boundary that applies to working in this repo.
 - **Never install into this repo.** Test installs go into a scratch directory.
   Use the session scratchpad, never the repo root, never `.` by accident.
-- **Language convention.** `install.js` console output and root
-  `CONTRIBUTING.md`/`Tasks/**` prose are Spanish. Everything under
-  `templates/**` is English, because it ships to other people's projects.
-  Preserve whichever applies; do not translate existing text as a side effect.
+- **Language convention.** `install.js` console output, `README.md`,
+  `RULES.md`, `CHANGELOG.md`, and root `Tasks/**` prose are Spanish.
+  `CONTRIBUTING.md`, `HOWTO.md`, `CLAUDE.md`, everything under `Docs/**`,
+  and everything under `templates/**` are English — the payload docs
+  because they ship to other people's projects, the rest because they're
+  either an AI-agent instruction file or aimed at a wider/external
+  audience (public contributors, a documentation ingestion pipeline).
+  Preserve whichever applies; do not translate existing text as a side
+  effect.
 - **Supported stacks** are exactly `node`, `php`, `java-maven`, `java-gradle`,
   `python`. Note the trap: the `python` **stack** describes a target project
   written in Python and is unrelated to the engine's own runtime. A spec that
@@ -330,7 +335,8 @@ Reference templates live in `references/` inside this skill folder.
 deliverables: they capture the reasoning while a feature is in flight and are
 deliberately not persisted. Do not propose tracking them. When a feature lands,
 the durable record goes where users and contributors actually read it —
-`CHANGELOG.md`, `CONTRIBUTING.md`, `README.md`, `RULES.md`, and code comments —
+`CHANGELOG.md`, `CONTRIBUTING.md`, `HOWTO.md`, `README.md`, `RULES.md`,
+`Docs/**`, and code comments —
 written from what actually shipped, not from what the plan said. A task file is
 scaffolding; the shipped docs are the building.
 
@@ -584,8 +590,10 @@ Finally:
 - Inspect the generated files by hand for anything the tests do not assert
   (interpreter strings, YAML validity, exactly-one-CI-file).
 - Update `CHANGELOG.md` for any user-facing change.
-- Update `CONTRIBUTING.md` if the contributor workflow changed (e.g. a new
-  required field in a stack profile).
+- Update `HOWTO.md` if the technical extension shape changed (e.g. a new
+  required field in a stack profile); update `CONTRIBUTING.md` only if the
+  contributor process itself changed (how to open an issue/PR, review
+  expectations).
 - Save new decisions via `engram` `mem_save` if available.
 - Document any skipped verification with the exact command and the exact reason.
 

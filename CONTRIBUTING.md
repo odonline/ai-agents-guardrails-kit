@@ -1,211 +1,144 @@
-# Contributing
+# Contributing to ai-agents-guardrails-kit
 
-## Agregar un nuevo stack (lenguaje)
+Thanks for taking the time to contribute! This project scaffolds a
+policy-enforcement system (a policy engine, per-harness adapters, git
+hooks, and CI) into other people's projects, so changes here can affect
+every project that installs or reinstalls the kit — we'd rather be a
+little slower and careful about that than fast and wrong.
 
-Un bloque nuevo en `stacks.js`, nada más — `install.js` y `generate.js` lo
-recogen automáticamente.
+## Before you start
 
-```js
-ruby: {
-  label: "Ruby (Bundler)",
-  markers: ["Gemfile"],
-  detect: (dir) => exists(dir, "Gemfile"),
-  checks: [
-    { name: "tests", command: "bundle exec rspec" },
-    { name: "lint", command: "bundle exec rubocop" },
-  ],
-  changedExtensions: [".rb"],
-  extraBlocked: [
-    { pattern: "\\bgem\\s+push\\b", action: "ask", reason: "Publishing a gem requires approval." },
-  ],
-  ci: { setupAction: "ruby/setup-ruby@v1", withBlock: "ruby-version: '3.3'", install: "bundle install" },
-  gitlabCi: { image: "ruby:3.3", install: "bundle install" },
-},
-```
+Get oriented first:
 
-`ci` es el setup step para GitHub Actions; `gitlabCi` es la imagen Docker
-equivalente para GitLab CI (`generate.js` genera ambos formatos de CI a
-partir del mismo stack — el instalador elige uno según el host git
-detectado, ver `README.md`). No te olvides de sumar el nuevo stack a
-`STACK_MARKERS` en `test/install.test.js` si querés que el smoke test lo
-cubra.
+- **[`README.md`](./README.md)** — what the kit does and how to install it.
+- **[`Docs/`](./Docs/)** — the "why": architecture, the policy engine's
+  real decision logic, the design constraints (G1–G17) that gate changes,
+  and a written history of concrete bugs found and fixed.
+- **[`HOWTO.md`](./HOWTO.md)** — the technical reference for *making*
+  structural changes: adding a language stack, adding an agent harness,
+  touching the vendored dependency, generated git hooks, or the
+  manifest/uninstaller/toggle. Read this before touching `install.js`,
+  `stacks.js`, `generate.js`, `docs.js`, or anything under `templates/**`.
+- **[`RULES.md`](./RULES.md)** — generated (`node docs.js`), the literal,
+  always-current table of every rule the policy engine enforces. Never
+  hand-edited.
+- **[`CHANGELOG.md`](./CHANGELOG.md)** — what changed and why, in order.
 
-Después:
-```bash
-node install.js --target /tmp/algún-proyecto-de-prueba --agents claude-code --stacks ruby --yes
-node /tmp/algún-proyecto-de-prueba/.agent-security/test_policy_engine.js  # sanity check
-```
+One thing worth internalizing up front: this repo has two audiences.
+**Kit-side** code (`install.js`, `stacks.js`, `generate.js`, `docs.js`)
+runs once, on a contributor's own machine, to scaffold a target project.
+**Payload** code (everything under `templates/`) gets copied into that
+target project and runs there, on every AI agent tool call, for the life
+of that project. Confusing which one you're changing is the most common
+way to introduce a subtle bug here — `HOWTO.md` and `Docs/architecture.md`
+both cover this distinction in detail.
 
-## Agregar un nuevo agente/harness
+## Code of conduct
 
-1. Carpeta nueva en `templates/<agente>/` con su adapter (`pretooluse.js`)
-   que traduzca el JSON de ese harness al formato que espera
-   `policy_engine.evaluateFromDict()`, y su archivo de config de hooks. El
-   adapter tiene que emitir una decisión bien formada y salir con 0 **en todos
-   los caminos de error**, incluido no poder cargar el motor: un hook que se
-   muere deja el comportamiento del harness indefinido.
-2. Entrada nueva en el objeto `AGENTS` de `install.js`, y el `command` del
-   config de hooks tiene que decir `node`, apuntando a un archivo que el
-   instalador realmente copie (hay un test que lo verifica).
-3. No toques `policy_engine.js` — esa lógica es compartida por diseño; el
-   adapter es la única pieza que debe conocer el formato JSON específico
-   del harness.
-4. Entrada nueva en `HOOK_CONFIGS` de `templates/common/kit_manifest.js`. Ese
-   array es lo que `toggle.js` renombra al desactivar y lo que `uninstall.js` lee
-   para decir si el enforcement quedó enganchado. Un harness que no esté ahí no
-   se puede apagar, y peor: el resumen del desinstalador va a decir que los
-   guardrails quedaron desactivados cuando no es cierto.
-5. Sumá el harness a `HARNESS_WIRING` en `test/install.test.js` — el ciclo
-   disable→enable se testea por harness (G7).
+This project doesn't have a separate `CODE_OF_CONDUCT.md` yet. Until it
+does: be respectful, assume good faith, and keep disagreements about code
+and design rather than people. Maintainers may remove comments or block
+participants that don't meet this bar.
 
-## Dependencias vendorizadas
+## Ways to contribute
 
-El kit no tiene dependencias instalables: `package.json` no declara
-`dependencies` y hay un test que lo verifica. La única excepción es
-**`js-yaml`**, que viaja vendorizado en `templates/common/vendor/js-yaml.js`
-porque el motor de políticas necesita leer `policy.yaml` dentro del proyecto
-destino — que puede ser un proyecto Java o PHP sin ningún flujo de npm.
+- **Report a bug** — including a rule that should block/ask/allow
+  something and doesn't, or one that's over- or under-broad.
+- **Propose an enhancement** — a new stack, a new agent harness, a new
+  core rule, better installer ergonomics.
+- **Improve documentation** — `README.md`, `Docs/`, `HOWTO.md`, or the
+  generated-but-reviewable `RULES.md`.
+- **Fix something you found while using the kit** — several of the most
+  important bug fixes in this project's history came from actually running
+  the installed guardrails against a real project rather than from the
+  test suite. See `Docs/lessons-learned.md` for examples; that kind of
+  report is exactly as valuable as a code contribution.
 
-Reglas:
+## Reporting bugs
 
-- El archivo vendorizado es **byte-idéntico** al `dist/js-yaml.js` publicado en
-  npm. No se le agrega header, no se le aplican parches, no se minifica.
-- Su SHA-256 está registrado en `templates/common/vendor/VENDOR.md` y
-  `npm test` lo verifica. Si editás el archivo, el pipeline falla — a propósito.
-- Se vendoriza el bundle **sin minificar**: pesa 131 KB en vez de 43 KB y se
-  puede leer. Es lo único que separa a un agente del filesystem del usuario;
-  que sea auditable vale más que los 88 KB.
-- Si hace falta un fix, va upstream y después se vendoriza la versión liberada.
-  Una copia parcheada localmente no la puede verificar nadie, que es
-  exactamente lo que se buscaba al vendorizar.
+Open a GitHub issue with:
 
-El procedimiento completo de actualización está en
-`templates/common/vendor/VENDOR.md`. Agregar **cualquier otra** dependencia,
-del lado del kit o del payload, necesita aprobación explícita — no es un detalle
-de implementación.
+1. What you expected to happen, and what happened instead.
+2. The exact command you ran (`install.js` flags, or the specific tool
+   call an installed agent made).
+3. Your OS and shell (Windows/Git Bash, macOS, Linux) — several past bugs
+   were platform-specific path-handling issues.
+4. Which stack(s) and agent harness(es) are involved, if relevant.
+5. If it's a policy-engine decision that looked wrong, the relevant line
+   from `.agent-security/audit.log` if you have it.
 
-## Cambiar reglas core (agnósticas al lenguaje)
+## Suggesting enhancements
 
-Editar `CORE_BLOCKED_COMMANDS` / `CORE_PROTECTED_PATHS` en `generate.js`.
-Corré `node docs.js` para regenerar `RULES.md` (documentación de todas las
-reglas — CI falla si te olvidás de este paso) y los tests después:
+For anything beyond a small fix — a new core `blocked_commands`/
+`protected_paths` rule, a new stack, a new harness, a change to the
+install/uninstall/toggle lifecycle — please open an issue first to discuss
+the approach. Changes to core rules affect every installed project, and
+changes to the installer's git-hook or manifest behavior carry real risk of
+silently breaking a project's existing safeguards if not done carefully
+(see `HOWTO.md`).
+
+## Development setup
+
+Requires only Node.js >= 16 — the kit itself has zero installable
+dependencies.
 
 ```bash
-node docs.js
-node install.js --target /tmp/test --agents claude-code --stacks node --yes
-node /tmp/test/.agent-security/test_policy_engine.js
+git clone <your fork's URL>
+cd ai-agents-guardrails-kit
+npm test                 # the installer's own regression suite
+node docs.js              # regenerate RULES.md and check it doesn't drift
+node install.js --help    # see all installer flags
 ```
 
-## Tocar los git hooks generados o el encadenamiento
-
-Dos trampas verificadas en este repo, las dos silenciosas:
-
-- **`git rev-parse --git-path hooks` respeta `core.hooksPath`.** En un proyecto
-  con el kit instalado devuelve `.husky`, así que un shim que lo use se llama a
-  sí mismo. Usá `"$(git rev-parse --git-common-dir)/hooks"`, que es inmune y
-  además resuelve bien en un worktree enlazado (ahí `--git-dir` apunta a
-  `.git/worktrees/<name>`, que no es donde viven los hooks).
-- **Los shims se generan desde template literals de JS.** Una expansión de shell
-  con la forma `${...}` dentro de un backtick **no** llega al shell: JS la
-  interpola primero. `${1+"$@"}` se evaluaba como `1 + "$@"` y el archivo quedaba
-  con `1$@`. Toda expansión que tenga que llegar al shell va escapada
-  (`\${...}`), y el test `chain shims forward arguments without mangling them`
-  revisa el **texto emitido**, no el fuente. Si agregás sintaxis de shell nueva a
-  un builder, testeá la salida.
-
-Además: el contenido de `.husky/` se **commitea** en el proyecto destino, así que
-nada de paths absolutos adentro de un shim, y todo path se chequea antes de
-invocarse (otro dev puede no tener ese hook). `sh` POSIX, sin flags GNU de
-`mktemp`, sin `[[ ]]` — corre en Git Bash también (G10).
-
-Y la regla que ordena todo esto: **si no se pueden escribir los shims, no se
-configura `core.hooksPath`.** Configurarlo igual apagaría hooks del proyecto sin
-nada que los reemplace, que es el bug que el encadenamiento existe para arreglar.
-
-## El kit nunca commitea (G17)
-
-La historia del repo destino es del cliente. Nada del kit —ni `install.js`, ni el
-desinstalador, ni el toggle, ni **nada que el kit genere**— puede correr
-`git add`, `commit`, `push`, `checkout`, `reset`, `merge`, `rebase`, `stash`,
-`tag` ni `branch`.
-
-Lo único que el kit escribe en git es **una** pieza de config: `core.hooksPath`
-(G12), que además registra en el manifest y revierte al desinstalar. Todo lo
-demás que escribe queda **sin trackear**, para que el cliente lo revise y lo
-commitee él.
-
-El caso que se olvida: un hook generado que staggee o commitee por vos sería peor
-que el instalador haciéndolo una vez — lo haría en cada commit, en el clone de
-cada persona del equipo. Por eso hay un test que revisa el **contenido generado**
-(`pre-commit`, `pre-push`, los dos formatos de CI) además de los sitios de
-invocación.
-
-Los tests no buscan texto: el fuente contiene `git push --force` y
-`git commit --no-verify` legítimamente, como patrones de `blocked_commands` y como
-fixtures. Buscan qué se le pasa a `execSync`/`execFileSync`/`spawnSync`, y hay
-además un test end-to-end que instala sobre un repo con un commit y un working
-tree sucio y verifica que `HEAD`, el index y los archivos sin commitear quedaron
-igual.
-
-Si necesitás una operación de git nueva, va a la lista `ALLOWED` de ese test — y
-sólo después de decidir explícitamente que es segura.
-
-## Tocar el manifest, el desinstalador o el toggle
-
-`install.js` registra en `.agent-security/install-manifest.json` todo lo que
-escribe y todo el estado que cambia afuera (`core.hooksPath`, líneas del
-`.gitignore`). `uninstall.js` y `toggle.js` **sólo** actúan sobre lo que ese
-registro dice que es nuestro y sigue intacto.
-
-Dos reglas para no romperlo:
-
-- **El hash se calcula normalizando fines de línea a LF**, en `install.js` y en
-  `templates/common/kit_manifest.js`. Si las dos implementaciones se separan, en
-  un checkout con CRLF todo archivo intacto parece modificado y el desinstalador
-  no borra nada — falla silencioso y hacia el lado inútil. Hay un test que lo
-  cubre; no lo saques.
-- **Todo archivo nuevo que copie el instalador tiene que entrar al manifest.** Si
-  lo agregás a `COMMON_FILES` o a `AGENTS`, eso pasa solo (`copyFile()`/
-  `writeText()` alimentan el acumulador). Si lo escribís por fuera de esas dos
-  funciones, registralo a mano o queda huérfano al desinstalar.
-- **El manifest se commitea, así que cuidado con los datos de máquina.** Sin él
-  nadie que clone puede desinstalar, pero eso significa que un campo específico
-  de una máquina viaja al clone de otra persona. Hoy hay exactamente uno:
-  `git.hooksPathBefore`. El desinstalador verifica que ese directorio exista en
-  este clone antes de restaurarlo — si no, desetea y lo explica. Si agregás otro
-  campo de ese tipo, tiene que traer su propia verificación.
-
-Y una que no es negociable: **no le agregues al motor ningún flag, sentinel file
-ni `enabled: false` que lo haga permitir todo.** Desactivar se hace
-desenganchando el harness, no desde adentro de la pieza que existe para fallar
-cerrada. Hay un test que verifica que `policy_engine.js`, `policy_loader.js` y
-`final_check.js` no conozcan esa idea.
-
-Verificación mínima al cambiar cualquiera de los tres: `npm test` y un
-round-trip real contra un directorio de scratch (nunca contra este repo).
+**Never run `install.js` against this repository.** Always target a
+scratch/temp directory:
 
 ```bash
-node install.js --target /tmp/rt --agents claude-code --stacks node --git-hooks true --ci none --yes
+node install.js --target /tmp/some-test-dir --agents claude-code --stacks node --git-hooks true --ci github --yes
 ```
+
+The payload (policy engine) has its own pure test suite that runs straight
+from the source, no install required:
 
 ```bash
-node /tmp/rt/.agent-security/uninstall.js --yes
+node templates/common/test_policy_engine.js
 ```
 
-## Correr los tests después de tocar install.js / generate.js / stacks.js
+## Before opening a pull request
 
-`test/install.test.js` es la suite que valida el **instalador en sí**
-(qué se escribe, para qué stack, según qué host git) — no confundir con
-`templates/common/test_policy_engine.js`, que valida el motor de políticas
-que queda instalado en el proyecto destino (y que `npm test` corre también,
-como subproceso). Sin dependencias externas, corre igual en
-Windows/macOS/Linux:
+- [ ] `npm test` passes.
+- [ ] If you changed core rules in `generate.js` (or anything in
+      `stacks.js`), you ran `node docs.js` and committed the regenerated
+      `RULES.md`. CI diffs it and fails the build if it's stale.
+- [ ] If you touched `install.js`, `stacks.js`, `generate.js`,
+      `templates/**`, the manifest, the uninstaller, or the toggle script,
+      you've read the relevant section of `HOWTO.md` — those areas carry
+      hard invariants (the G1–G17 constraints in `Docs/constraints-g-series.md`)
+      that are enforced by tests and by review.
+- [ ] You tested against a scratch directory, never against this repo.
+- [ ] New behavior has a test. A guardrail change without a test that
+      would fail if the guardrail regressed doesn't really verify
+      anything — see `Docs/testing-and-verification.md` for why mutation
+      testing specifically matters here.
 
-```bash
-npm test
-```
+## Commit messages
 
-Corré esto después de cualquier cambio a `install.js`, `generate.js` o
-`stacks.js` — está en el pipeline (`.gitlab-ci.yml`) así que un cambio que
-lo rompa no debería mergearse. Si agregás un stack nuevo o un caso de
-detección de host, sumá su caso ahí también.
+This repo loosely follows a `type: short summary` style (`feat:`, `fix:`,
+`refactor:`, `docs:`, ...) — not strictly enforced, but appreciated for a
+readable history.
+
+## Pull request process
+
+1. Describe **what** changed and **why** — link an issue if there is one.
+2. State explicitly whether the change is kit-side, payload, or both, and
+   which stacks/harnesses it touches.
+3. Expect review against the constraints in `Docs/constraints-g-series.md`
+   — a reviewer citing "this weakens G8" is citing that table.
+4. A maintainer may ask for `node docs.js` to be re-run, for additional
+   test coverage, or for `Docs/`/`HOWTO.md`/`CHANGELOG.md` to be updated to
+   match. Once addressed and green in CI, a maintainer will merge.
+
+## License
+
+By contributing, you agree that your contributions will be licensed under
+this project's [MIT license](./LICENSE).

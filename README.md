@@ -251,7 +251,7 @@ era. Es subtractivo, y se ve en `git status`.
 
 Node.js/TS, PHP (Composer/Laravel), Java (Maven), Java/Kotlin (Gradle),
 Python. Agregar uno nuevo es un solo bloque en `stacks.js` — ver
-`CONTRIBUTING.md`.
+`HOWTO.md`.
 
 ## Todas las reglas, documentadas
 

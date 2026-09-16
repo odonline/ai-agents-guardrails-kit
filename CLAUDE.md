@@ -154,7 +154,7 @@ agent's claim that tests passed, and appends a report to
 
 ### Adding things
 
-- New stack/language → one entry in `stacks.js` (see `CONTRIBUTING.md` for
+- New stack/language → one entry in `stacks.js` (see `HOWTO.md` for
   the exact shape, including the `gitlabCi` field) — also add its marker
   fixture to `STACK_MARKERS` in `test/install.test.js`.
 - New agent/harness → new `templates/<agent>/` adapter that translates
