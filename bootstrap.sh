@@ -9,7 +9,7 @@
 #
 # RECOMMENDED invocation (works reliably on every shell, including Git Bash
 # on Windows) — command substitution, not a pipe:
-#   bash -c "$(curl -fsSL https://github.com/ORG/ai-agents-guardrails-kit/-/raw/main/bootstrap.sh)"
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/ORG/ai-agents-guardrails-kit/v1.0.0/bootstrap.sh)"
 #   bash -c "$(curl -fsSL .../bootstrap.sh)" -- --agents claude-code --stacks node
 #
 # Also works, with a caveat (see below):
@@ -33,16 +33,21 @@
 #   GUARDRAILS_REPO_URL=git@github.com:ORG/ai-agents-guardrails-kit.git \
 #     curl -fsSL .../bootstrap.sh | bash
 #
+# REF defaults to a TAG, not to `main`, so everyone who runs this installs the
+# same bytes. `main` moves; an install that silently differs between two
+# developers is exactly the kind of drift guardrails exist to avoid. To track
+# the moving branch deliberately, say so:
+#   GUARDRAILS_REF=main bash -c "$(curl -fsSL .../bootstrap.sh)"
+#
 # Security note: this is the same curl-pipe-shell pattern the policy engine
 # itself blocks for AGENTS — that's intentional and fine here because a
-# human runs it, once, and can read it first. Pin GUARDRAILS_REF to a tag
-# or commit (not a mutable branch) before wiring this into your org, and
-# encourage `curl ... -o bootstrap.sh && less bootstrap.sh` before piping
-# on machines you don't fully trust.
+# human runs it, once, and can read it first. Encourage
+# `curl ... -o bootstrap.sh && less bootstrap.sh` before piping on machines
+# you don't fully trust.
 set -euo pipefail
 
 REPO_URL="${GUARDRAILS_REPO_URL:-https://github.com/odonline/ai-agents-guardrails-kit.git}"
-REF="${GUARDRAILS_REF:-main}"                   # recommended: pin to a tag, e.g. v1.0.0
+REF="${GUARDRAILS_REF:-v1.0.0}"                 # pinned to a tag on purpose — see below
 TARGET_DIR="${PWD}"
 
 if ! command -v git >/dev/null 2>&1; then

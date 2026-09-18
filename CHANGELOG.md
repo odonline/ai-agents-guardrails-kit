@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v1.0.0 — 2026-09-18
+
+Primera versión publicada del kit (motor en Node, payload con js-yaml
+vendorizado). No hay instalaciones previas en el mundo real, así que no hay
+nada que migrar.
 
 ### Reinstalar dejaba el kit imposible de desinstalar (corregido)
 

@@ -9,7 +9,7 @@ automática del stack del proyecto (Node, PHP, Java, Python...).
 Parado **dentro** del repo donde querés instalarlo:
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/odonline/ai-agents-guardrails-kit/main/bootstrap.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/odonline/ai-agents-guardrails-kit/v1.0.0/bootstrap.sh)"
 ```
 
 El instalador es agnóstico al host git (`bootstrap.sh` usa `git clone`, no una
@@ -18,11 +18,11 @@ espejo en tu propio GitLab:
 
 ```bash
 # GitLab (gitlab.com o self-hosted) — un espejo del repo en tu organización
-bash -c "$(curl -fsSL https://gitlab.tu-empresa.com/TU-ORG/ai-agents-guardrails-kit/-/raw/main/bootstrap.sh)"
+bash -c "$(curl -fsSL https://gitlab.tu-empresa.com/TU-ORG/ai-agents-guardrails-kit/-/raw/v1.0.0/bootstrap.sh)"
 
 # Cualquier otro host git, sin tocar el bootstrap: el script clona de donde le digas
 GUARDRAILS_REPO_URL=https://tu-host.com/TU-ORG/ai-agents-guardrails-kit.git \
-  bash -c "$(curl -fsSL https://tu-host.com/TU-ORG/ai-agents-guardrails-kit/-/raw/main/bootstrap.sh)"
+  bash -c "$(curl -fsSL https://tu-host.com/TU-ORG/ai-agents-guardrails-kit/-/raw/v1.0.0/bootstrap.sh)"
 
 # Vía npx, sin bootstrap
 npx --package=github:odonline/ai-agents-guardrails-kit install-guardrails
@@ -35,8 +35,13 @@ npx --package=git+https://gitlab.tu-empresa.com/TU-ORG/ai-agents-guardrails-kit.
 > repos privados. Si el espejo es privado, el `curl` del propio `bootstrap.sh`
 > necesita un token — o cloná el kit una vez y corré `node install.js --target
 > <proyecto>` directamente, que no necesita red. Conviene además pinear
-> `GUARDRAILS_REF` a un tag en vez de `main`, para que todo el equipo instale la
-> misma versión.
+> mismo tag, para que todo el equipo instale la misma versión.
+
+> **Versionado.** `bootstrap.sh` clona el tag `v1.0.0` por defecto, no `main`:
+> `main` se mueve, y dos developers instalando en días distintos terminarían con
+> reglas distintas sin que nada lo diga. Para seguir la rama a propósito:
+> `GUARDRAILS_REF=main bash -c "$(curl ...)"`. Los tags están en
+> [Releases](https://github.com/odonline/ai-agents-guardrails-kit/tags).
 
 > **¿Por qué `bash -c "$(curl ...)"` y no `curl ... | bash`?** El instalador
 > pregunta interactivamente (qué stack, qué agente). Con un pipe simple,
