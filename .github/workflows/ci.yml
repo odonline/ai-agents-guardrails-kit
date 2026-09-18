@@ -1,0 +1,58 @@
+# CI del repo ai-agents-guardrails-kit (no confundir con el workflow que el
+# instalador GENERA para los proyectos que lo usan — ese sale de generate.js).
+#
+# Espejo de .gitlab-ci.yml: el repo vive en GitHub, así que sin este archivo
+# nada verificaba el kit. Los dos pipelines corren exactamente los mismos pasos
+# y tienen que cambiar juntos.
+name: kit-self-test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  self-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Sin instalación de dependencias: el kit es zero-dependency (G1) y el
+      # payload vendoriza su única dependencia (js-yaml), así que node:20 ya
+      # tiene todo lo que necesitan los dos lados.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Tests del propio instalador
+        run: npm test
+
+      - name: RULES.md al día
+        run: |
+          node docs.js
+          git diff --exit-code RULES.md || {
+            echo "RULES.md está desactualizado respecto a generate.js/stacks.js."
+            echo "Corré 'node docs.js' y commiteá el resultado."
+            exit 1
+          }
+
+      # Un install real por stack, y después la suite del motor DENTRO del
+      # proyecto instalado: es la única forma de probar el payload, que no corre
+      # desde el kit. Nunca contra este repo — siempre un fixture descartable.
+      - name: Install + suite del motor, por stack
+        run: |
+          set -e
+          for stack in node php java-maven java-gradle python; do
+            echo "== Probando stack: $stack =="
+            fixture="$RUNNER_TEMP/fixture-$stack"
+            rm -rf "$fixture" && mkdir -p "$fixture"
+            case $stack in
+              node) echo '{}' > "$fixture/package.json" ;;
+              php) echo '{}' > "$fixture/composer.json" ;;
+              java-maven) echo '<project></project>' > "$fixture/pom.xml" ;;
+              java-gradle) touch "$fixture/build.gradle" ;;
+              python) touch "$fixture/pyproject.toml" ;;
+            esac
+            node install.js --target "$fixture" --agents claude-code --stacks $stack --git-hooks true --yes
+            node "$fixture/.agent-security/test_policy_engine.js"
+          done

@@ -144,22 +144,37 @@ function planGitSteps(manifest) {
   return steps;
 }
 
-function planGitignore(manifest) {
-  const added = (manifest.gitignore && manifest.gitignore.linesAdded) || [];
-  if (!added.length) return null;
-  const gi = abs(".gitignore");
-  if (!fs.existsSync(gi)) return null;
-  return {
-    path: ".gitignore",
-    lines: added,
-    // If the installer created the file, reverting our lines empties it, and an
-    // empty .gitignore is exactly the leftover junk this is supposed to avoid.
-    // If the project already had one, an empty result is theirs to keep.
-    createdByUs: !!(manifest.gitignore && manifest.gitignore.created),
-  };
+/**
+ * The files we appended lines to rather than created: .gitignore and
+ * .gitattributes. Both follow the same contract — take back exactly the lines
+ * the manifest says we added, leave everything else, and delete the file only
+ * if we created it and nothing of ours is left in it.
+ */
+const APPENDED_FILES = [
+  { key: "gitignore", path: ".gitignore" },
+  { key: "gitattributes", path: ".gitattributes" },
+];
+
+function planAppendedFiles(manifest) {
+  const plans = [];
+  for (const spec of APPENDED_FILES) {
+    const record = manifest[spec.key];
+    const added = (record && record.linesAdded) || [];
+    if (!added.length) continue;
+    if (!fs.existsSync(abs(spec.path))) continue;
+    plans.push({
+      path: spec.path,
+      lines: added,
+      // If the installer created the file, reverting our lines empties it, and an
+      // empty one is exactly the leftover junk this is supposed to avoid. If the
+      // project already had it, an empty result is theirs to keep.
+      createdByUs: !!(record && record.created),
+    });
+  }
+  return plans;
 }
 
-function printPlan(plan, gitSteps, gitignore, wired) {
+function printPlan(plan, gitSteps, appended, wired) {
   const say = (s) => console.log(s);
   say("\n=== Plan de desinstalación ===\n");
 
@@ -190,13 +205,15 @@ function printPlan(plan, gitSteps, gitignore, wired) {
 
   say("\nEstado de git:");
   gitSteps.forEach((s) => say(`  - ${s.text}`));
-  if (gitignore) {
-    say(`  - Sacar del .gitignore las ${gitignore.lines.length} líneas que agregó el instalador.`);
-    if (gitignore.createdByUs) {
-      say("    (ese .gitignore lo creamos nosotros: si queda vacío, se borra)");
+  if (appended.length) {
+    for (const a of appended) {
+      say(`  - Sacar del ${a.path} las ${a.lines.length} líneas que agregó el instalador.`);
+      if (a.createdByUs) {
+        say(`    (ese ${a.path} lo creamos nosotros: si queda vacío, se borra)`);
+      }
     }
   } else {
-    say("  - No hay líneas propias que sacar del .gitignore.");
+    say("  - No hay líneas propias que sacar del .gitignore ni del .gitattributes.");
   }
 
   say("\n" + "-".repeat(70));
@@ -227,7 +244,7 @@ function askConfirm() {
   });
 }
 
-function execute(plan, gitSteps, gitignore, manifest) {
+function execute(plan, gitSteps, appended, manifest) {
   const failed = [];
   let deleted = 0;
 
@@ -271,10 +288,10 @@ function execute(plan, gitSteps, gitignore, manifest) {
     }
   }
 
-  if (gitignore) {
+  for (const appendedFile of appended) {
     try {
-      const p = abs(gitignore.path);
-      const drop = new Set(gitignore.lines);
+      const p = abs(appendedFile.path);
+      const drop = new Set(appendedFile.lines);
       const kept = fs
         .readFileSync(p, "utf8")
         .split(/\r?\n/)
@@ -282,14 +299,14 @@ function execute(plan, gitSteps, gitignore, manifest) {
       // Collapse a trailing run of blank lines left behind by the removal.
       while (kept.length > 1 && kept[kept.length - 1] === "" && kept[kept.length - 2] === "") kept.pop();
       const remaining = kept.join("\n");
-      if (gitignore.createdByUs && remaining.trim() === "") {
+      if (appendedFile.createdByUs && remaining.trim() === "") {
         fs.unlinkSync(p);
         deleted++;
       } else {
         fs.writeFileSync(p, remaining);
       }
     } catch (e) {
-      failed.push(`.gitignore: ${e.message}`);
+      failed.push(`${appendedFile.path}: ${e.message}`);
     }
   }
 
@@ -340,10 +357,10 @@ async function main(argv) {
 
   const plan = buildPlan(manifest);
   const gitSteps = planGitSteps(manifest);
-  const gitignore = planGitignore(manifest);
+  const appended = planAppendedFiles(manifest);
   const wired = stillWired(plan);
 
-  printPlan(plan, gitSteps, gitignore, wired);
+  printPlan(plan, gitSteps, appended, wired);
 
   if (dryRun) {
     console.log("\n--dry-run: no toqué nada.");
@@ -363,7 +380,7 @@ async function main(argv) {
     }
   }
 
-  const result = execute(plan, gitSteps, gitignore, manifest);
+  const result = execute(plan, gitSteps, appended, manifest);
 
   console.log("\n=== Resultado ===\n");
   console.log(`  Archivos borrados:      ${result.deleted}`);
@@ -385,6 +402,8 @@ async function main(argv) {
   }
   console.log("-".repeat(70));
 
+  reportLogsKept();
+
   const leftovers = removeLeftovers();
   if (leftovers.length) {
     console.log("\n⚠ No pude borrar estos archivos nuestros, borralos a mano:");
@@ -392,6 +411,27 @@ async function main(argv) {
   }
 
   return result.failed.length || leftovers.length ? 1 : 0;
+}
+
+/**
+ * The run logs the engine produced while it was installed.
+ *
+ * These are deliberately NOT deleted: audit.log and completion_reports.log are
+ * the record of what the guardrails actually did, and that record is the user's,
+ * not ours — it is evidence, and an uninstaller that destroys evidence is not a
+ * tool anyone should trust. But leaving them silently, under a summary that says
+ * nothing was kept, is its own small lie. So: name them, say why, and say how to
+ * finish the job by hand.
+ */
+function reportLogsKept() {
+  const logs = [".agent-security/audit.log", ".agent-security/completion_reports.log"].filter((p) =>
+    fs.existsSync(abs(p))
+  );
+  if (!logs.length) return;
+  console.log("\nSe CONSERVAN los registros de lo que el kit hizo mientras estuvo instalado:");
+  logs.forEach((p) => console.log(`  ~ ${p}`));
+  console.log("  No los borro: son tu registro de auditoría, no un archivo nuestro.");
+  console.log("  Si no los querés, borralos vos — y con ellos el directorio .agent-security/.");
 }
 
 if (require.main === module) {

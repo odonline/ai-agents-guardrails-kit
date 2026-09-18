@@ -6,24 +6,37 @@ automática del stack del proyecto (Node, PHP, Java, Python...).
 
 ## Quickstart
 
-El instalador es agnóstico al host git (`bootstrap.sh` usa `git clone`, no
-una URL de API específica de un proveedor). Los ejemplos de abajo asumen
-que ya hosteaste este repo en algún lado — ver
-["Si forkeás/hosteás esto en otro lugar"](#si-forkeásosteás-esto-en-otro-lugar).
+Parado **dentro** del repo donde querés instalarlo:
 
 ```bash
-# GitHub — recomendado (funciona igual en bash, zsh, y Git Bash de Windows)
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/TU-ORG/ai-agents-guardrails-kit/main/bootstrap.sh)"
-npx --package=github:TU-ORG/ai-agents-guardrails-kit install-guardrails
-
-# GitLab (gitlab.com o self-hosted) — recomendado
-bash -c "$(curl -fsSL https://gitlab.com/TU-ORG/ai-agents-guardrails-kit/-/raw/main/bootstrap.sh)"
-npx --package=git+https://gitlab.com/TU-ORG/ai-agents-guardrails-kit.git install-guardrails
-
-# Cualquier otro host git (Bitbucket, self-hosted genérico...)
-GUARDRAILS_REPO_URL=https://tu-host.com/TU-ORG/ai-agents-guardrails-kit.git \
-  bash -c "$(curl -fsSL https://tu-host.com/.../bootstrap.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/odonline/ai-agents-guardrails-kit/main/bootstrap.sh)"
 ```
+
+El instalador es agnóstico al host git (`bootstrap.sh` usa `git clone`, no una
+URL de API específica de un proveedor), así que la misma receta sirve desde un
+espejo en tu propio GitLab:
+
+```bash
+# GitLab (gitlab.com o self-hosted) — un espejo del repo en tu organización
+bash -c "$(curl -fsSL https://gitlab.tu-empresa.com/TU-ORG/ai-agents-guardrails-kit/-/raw/main/bootstrap.sh)"
+
+# Cualquier otro host git, sin tocar el bootstrap: el script clona de donde le digas
+GUARDRAILS_REPO_URL=https://tu-host.com/TU-ORG/ai-agents-guardrails-kit.git \
+  bash -c "$(curl -fsSL https://tu-host.com/TU-ORG/ai-agents-guardrails-kit/-/raw/main/bootstrap.sh)"
+
+# Vía npx, sin bootstrap
+npx --package=github:odonline/ai-agents-guardrails-kit install-guardrails
+npx --package=git+https://gitlab.tu-empresa.com/TU-ORG/ai-agents-guardrails-kit.git install-guardrails
+```
+
+> **Espejando el kit en un GitLab interno.** Cloná el repo, pusheálo a tu
+> instancia, y listo: `bootstrap.sh` clona con las credenciales git que la
+> persona ya tiene configuradas (SSH key o token), así que funciona igual para
+> repos privados. Si el espejo es privado, el `curl` del propio `bootstrap.sh`
+> necesita un token — o cloná el kit una vez y corré `node install.js --target
+> <proyecto>` directamente, que no necesita red. Conviene además pinear
+> `GUARDRAILS_REF` a un tag en vez de `main`, para que todo el equipo instale la
+> misma versión.
 
 > **¿Por qué `bash -c "$(curl ...)"` y no `curl ... | bash`?** El instalador
 > pregunta interactivamente (qué stack, qué agente). Con un pipe simple,

@@ -172,7 +172,7 @@ function buildCiWorkflow(selectedStackKeys) {
     .join("\n\n");
 
   const checkSteps = stacks
-    .flatMap((s) => s.checks.map((c) => `      - name: ${c.name} (${s.label})\n        run: ${c.command}`))
+    .flatMap((s) => s.checks.map((c) => `      - name: ${c.name} (${s.label})\n        run: ${yamlStr(c.command)}`))
     .join("\n\n");
 
   return `# Place at .github/workflows/security.yml
@@ -201,6 +201,24 @@ jobs:
 ${setupSteps || "      # No stack detected at install time — add your language's setup step here."}
 
 ${checkSteps || "      # No stack-specific checks configured."}
+
+      # Un hook sin el bit de ejecución no lo corre git, y no avisa. Es el modo
+      # más común de que los guardrails estén instalados y no enforcen nada: en
+      # Windows git no guarda el bit (core.filemode=false), así que se commitea
+      # 100644 y deja de correr para todo el resto del equipo.
+      - name: Hooks are executable
+        run: |
+          for hook in pre-commit pre-push; do
+            [ -f ".husky/$hook" ] || continue
+            mode=$(git ls-files -s ".husky/$hook" | cut -d" " -f1)
+            if [ -n "$mode" ] && [ "$mode" != "100755" ]; then
+              echo "ERROR: .husky/$hook está commiteado con modo $mode, no 100755."
+              echo "Git IGNORA en silencio un hook sin permiso de ejecución, así que en Linux/macOS los guardrails no corren."
+              echo "Arreglalo con: git update-index --chmod=+x .husky/$hook && git commit"
+              failed=1
+            fi
+          done
+          [ -z "$failed" ]
 
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
@@ -239,6 +257,27 @@ policy-engine-test:
     - node .agent-security/test_policy_engine.js
 
 ${stackJobs || "# No stack detected at install time — add your language's job here.\n"}
+# Un hook sin el bit de ejecución no lo corre git, y no avisa. Es el modo más
+# común de que los guardrails estén instalados y no enforcen nada: en Windows
+# git no guarda el bit (core.filemode=false), así que se commitea 100644 y deja
+# de correr para todo el resto del equipo.
+hooks-executable:
+  stage: test
+  image: alpine/git:latest
+  script:
+    - |
+      for hook in pre-commit pre-push; do
+        [ -f ".husky/$hook" ] || continue
+        mode=$(git ls-files -s ".husky/$hook" | cut -d" " -f1)
+        if [ -n "$mode" ] && [ "$mode" != "100755" ]; then
+          echo "ERROR: .husky/$hook está commiteado con modo $mode, no 100755."
+          echo "Git IGNORA en silencio un hook sin permiso de ejecución, así que en Linux/macOS los guardrails no corren."
+          echo "Arreglalo con: git update-index --chmod=+x .husky/$hook && git commit"
+          failed=1
+        fi
+      done
+      [ -z "$failed" ]
+
 secret-scan:
   stage: test
   image: zricethezav/gitleaks:latest

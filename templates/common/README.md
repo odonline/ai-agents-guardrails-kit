@@ -115,14 +115,28 @@ Raising only one puts you back where you started.
 if this stays local, a teammate's agent runs unrestricted on the same repo, and
 the risk was never "my agent" — it was "an agent".
 
-Four pieces do not work at all unless they are committed:
+Five pieces do not work at all unless they are committed:
 
 | Path | Why it must be tracked |
 |---|---|
 | `.agent-security/vendor/` | The engine's YAML parser. Without it the engine cannot load, and the adapter then fails closed and denies **every** tool call — `git status` included. See the warning below |
 | `.husky/pre-commit`, `.husky/pre-push`, and any chain shims | That is how husky works — they are repo content. The chain shims are written without absolute paths specifically so they can be committed |
 | `.github/workflows/security.yml` or `.gitlab-ci.yml` | Uncommitted, the pipeline does not exist. CI plus branch protection is the *real* enforcement layer; the git hooks are convenience |
+| `.gitattributes` | Pins `.husky/**` to LF so the hooks survive a checkout on Windows. A hook with CRLF dies on Linux/macOS with `sh\r: No such file or directory` |
 | `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` | The operating contract for the whole team's agents, not just yours |
+
+> **Commit the hooks *executable*.** Git silently skips a hook without the exec
+> bit, and git on Windows (`core.filemode=false`) records them `100644` no matter
+> what is on disk. Once, after `git add`:
+>
+> ```bash
+> git update-index --chmod=+x .husky/pre-commit .husky/pre-push
+> ```
+>
+> `git ls-files -s .husky/` should then show `100755` for both. The installer
+> cannot do this for you — it only works on tracked files, and this kit never
+> writes to your index (see "It does not commit" below). The generated CI job
+> `Hooks are executable` fails the build if it was forgotten.
 
 > **`vendor/` is a trap in PHP, Go and Ruby projects.** Those ecosystems ship a
 > `vendor` line in `.gitignore`, and an unanchored one matches a directory of

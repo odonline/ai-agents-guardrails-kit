@@ -2,6 +2,93 @@
 
 ## Unreleased
 
+### Reinstalar dejaba el kit imposible de desinstalar (corregido)
+
+`copyFile`/`writeText` decidían sólo por `fs.existsSync`. En una reinstalación
+todos los archivos existen, así que los 26 se escribían como `.new` **y** se
+registraban en el manifest con `status: "skipped"`, que significa "esto ya
+estaba en el proyecto antes de que llegáramos".
+
+El ruido de los `.new` era la mitad visible. La otra mitad: `classifyFile()`
+mapea `skipped` a `preexisting`, así que `uninstall.js` concluía que el kit
+entero era del usuario y **no borraba nada** — dejaba los hooks enganchados
+después de decir que desinstalaba. Verificado en un fixture: "No hay archivos
+para borrar (ninguno coincide con lo que el instalador escribió)".
+
+Ahora, si lo que está en disco es byte por byte lo que íbamos a escribir
+(comparado normalizando fines de línea, igual que hashea el manifest), el
+instalador no escribe nada, reporta `= archivo (sin cambios)` y lo registra como
+propio. G4 se mantiene intacto: no se pisa nada porque no hay nada que pisar, y
+un archivo que vos editaste sigue recibiendo su `.new` como siempre.
+
+### Los git hooks se commiteaban sin permiso de ejecución desde Windows (mitigado)
+
+Git no ejecuta un hook que no sea ejecutable, y **no avisa**. El instalador ya
+hacía `chmod 755`, pero git en Windows usa `core.filemode=false` (NTFS no tiene
+bit de ejecución que leer), así que al commitear los registra como `100644`.
+Resultado: el equipo entero en Linux/macOS clona hooks que git ignora en
+silencio. Misma clase de falla que `core.hooksPath`, una capa más abajo.
+
+El instalador no puede arreglarlo solo: `git update-index --chmod=+x` sólo
+funciona sobre archivos ya trackeados, y los nuestros están sin trackear cuando
+el instalador corre — staged­earlos sería exactamente lo que G17 prohíbe. Así
+que se automatiza todo lo que sí se puede:
+
+- detecta `core.filemode=false` y muestra el comando exacto como paso
+  `[obligatorio]`, en vez de dejar que se enteren por un colega;
+- escribe `.gitattributes` con `.husky/** text eol=lf` — la otra mitad del mismo
+  problema, esa sí automatizable: con `core.autocrlf=true` (el default en
+  Windows) el hook se checkouteaba con CRLF y moría en Linux/macOS con
+  `/usr/bin/env: 'sh\r': No such file or directory`;
+- el CI generado (GitHub **y** GitLab) falla el build si los hooks están
+  commiteados sin `100755`, así que olvidarse frena en el pipeline.
+
+`uninstall.js` saca del `.gitattributes` exactamente las líneas que agregó, con
+el mismo contrato que ya tenía para el `.gitignore`.
+
+### El repo del kit no tenía CI propio
+
+`origin` apunta a GitHub y el repo sólo traía `.gitlab-ci.yml`, así que **nada
+verificaba el kit**: ni `npm test`, ni el chequeo de que `RULES.md` esté al día,
+ni el install por stack. Por eso pasó desapercibido que la suite venía fallando.
+Se agrega `.github/workflows/ci.yml`, espejo del pipeline de GitLab.
+
+### El workflow de GitHub generado para proyectos PHP era YAML inválido (corregido)
+
+Los checks del stack PHP empiezan con `[ -x vendor/bin/phpunit ] && ...`, y un
+valor YAML sin comillas que abre con `[` se parsea como flow sequence. El
+`.github/workflows/security.yml` resultante no era YAML válido, así que **GitHub
+se negaba a correrlo**: todo proyecto PHP en GitHub quedaba sin la única capa de
+enforcement que no se puede saltear con `--no-verify`, sin que nada lo dijera.
+
+El builder de GitLab ya citaba los comandos (`yamlStr`); el de GitHub no. Ahora
+los dos lo hacen, y hay un test que parsea los 10 archivos generados (5 stacks x
+2 hosts) con el js-yaml vendorizado.
+
+### El `--git-hooks` pelado se comía el flag siguiente (corregido)
+
+`--help` documenta la forma pelada, pero el parser consumía el token siguiente
+siempre: `--git-hooks --yes` se leía como `gitHooks=true` y **sin** `--yes`, así
+que una corrida pensada para no ser interactiva se quedaba esperando en un
+prompt. Ahora sólo consume el token si es `true` o `false`.
+
+### Correcciones menores
+
+- El test de integridad del js-yaml vendorizado hasheaba bytes crudos, así que
+  **fallaba en todo checkout de Windows** (CRLF en el working copy, LF en el
+  blob) y pasaba en el CI de Linux. Ahora normaliza fines de línea, igual que
+  `kit_manifest.js`. Una falsa alarma sobre lo único que ese test existe para
+  detectar es peor que no tenerlo: enseña a ignorar un fallo de integridad.
+- El paso 3 del resumen decía "ya existía uno con ese nombre" siempre, incluso
+  cuando no se escribió ningún `.new`. Ahora se arma con lo que la corrida
+  realmente hizo.
+- `uninstall.js` dejaba `.agent-security/audit.log` y su directorio sin
+  mencionarlo, bajo un resumen que decía "Conservados: 0". Sigue sin borrarlos
+  —son tu registro de auditoría, no un archivo nuestro— pero ahora los nombra y
+  explica por qué.
+- El mensaje de "no se generó CI" todavía citaba `test_policy_engine.py`,
+  borrado en el port a Node.
+
 ### El motor vendorizado no se commiteaba en proyectos PHP/Go/Ruby (corregido)
 
 Esos tres ecosistemas traen una línea `vendor` en su `.gitignore`, y **sin

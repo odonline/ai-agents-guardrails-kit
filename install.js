@@ -85,7 +85,15 @@ function parseArgs(argv) {
     else if (a === "--stacks") args.stacks = argv[++i].split(",").map((s) => s.trim()).filter((s) => s !== "none");
     else if (a === "--target") args.target = path.resolve(argv[++i]);
     else if (a === "--yes" || a === "-y") args.yes = true;
-    else if (a === "--git-hooks") args.gitHooks = argv[++i] !== "false";
+    else if (a === "--git-hooks") {
+      // Only consume the next token when it is actually this flag's value.
+      // Unconditionally taking it meant the documented bare form swallowed
+      // whatever followed: `--git-hooks --yes` parsed as gitHooks=true and NO
+      // --yes, so a run scripted to be non-interactive sat waiting at a prompt.
+      const next = argv[i + 1];
+      if (next === "true" || next === "false") args.gitHooks = argv[++i] === "true";
+      else args.gitHooks = true;
+    }
     else if (a === "--ci") args.ci = argv[++i].trim(); // github | gitlab | none
     else if (a === "--uninstall") args.uninstall = true;
     else if (a === "--disable") args.disable = true;
@@ -166,6 +174,7 @@ const MANIFEST = {
   dirsCreated: [],
   git: { hooksPathBefore: null, hooksPathSet: null, chainedFrom: null, shims: [] },
   gitignore: { linesAdded: [], created: false },
+  gitattributes: { linesAdded: [], created: false },
 };
 
 /**
@@ -185,9 +194,69 @@ function manifestPath(destAbs) {
   return path.relative(TARGET_ROOT, destAbs).split(path.sep).join("/");
 }
 
+/**
+ * What a previous install of this kit recorded, if there was one.
+ *
+ * The manifest is rebuilt from scratch on every run, and most of it should be:
+ * it describes what is on disk now. But three of its fields describe things
+ * that happened ONCE and cannot be observed a second time — the .gitignore and
+ * .gitattributes lines we appended (a reinstall finds them already present and
+ * appends nothing) and the directories we created (a reinstall finds them there
+ * and creates nothing). Rebuilding those from a reinstall yields empty lists,
+ * and the uninstaller then leaves our lines in the user's .gitignore and our
+ * empty directories on disk, forever.
+ *
+ * Read as data, never trusted as truth: every carried-forward entry is checked
+ * against what is actually on disk before it is kept.
+ */
+function loadPreviousManifest(target) {
+  try {
+    const raw = fs.readFileSync(path.join(target, MANIFEST_REL), "utf8");
+    const m = JSON.parse(raw);
+    return m && typeof m === "object" ? m : null;
+  } catch (e) {
+    return null; // absent, unreadable or corrupt — this is a first install
+  }
+}
+
+function carryForwardPreviousManifest(target, prev) {
+  if (!prev) return;
+
+  // Directories: keep the ones a previous install created that are still there.
+  for (const d of prev.dirsCreated || []) {
+    if (!MANIFEST.dirsCreated.includes(d) && fs.existsSync(path.join(target, d))) {
+      MANIFEST.dirsCreated.push(d);
+    }
+  }
+
+  // Appended lines: keep the ones still present in the file. A line the user
+  // deleted by hand is theirs to have deleted; we do not re-claim it.
+  for (const key of ["gitignore", "gitattributes"]) {
+    const record = prev[key];
+    if (!record || !Array.isArray(record.linesAdded) || !record.linesAdded.length) continue;
+    const file = path.join(target, key === "gitignore" ? ".gitignore" : ".gitattributes");
+    let present;
+    try {
+      present = new Set(fs.readFileSync(file, "utf8").split(/\r?\n/).map((l) => l.trim()));
+    } catch (e) {
+      continue; // the file is gone; nothing of ours is left to take back
+    }
+    const stillOurs = record.linesAdded.filter((l) => present.has(l.trim()));
+    for (const l of stillOurs) {
+      if (!MANIFEST[key].linesAdded.includes(l)) MANIFEST[key].linesAdded.push(l);
+    }
+    // "We created this file" is a fact about the first install, not this one.
+    if (record.created) MANIFEST[key].created = true;
+  }
+}
+
 function recordFile(destAbs, content, status) {
   const p = manifestPath(destAbs);
   if (p === MANIFEST_REL) return; // the manifest never lists itself
+  // "unchanged" is recorded exactly like "written": the bytes on disk ARE what
+  // we would have written, so the file is ours and the uninstaller must still be
+  // allowed to remove it. Recording it as "skipped" is what used to make a
+  // reinstall silently disown the whole kit — uninstall then deleted nothing.
   if (status === "skipped") {
     MANIFEST.newFiles.push(p + ".new");
     MANIFEST.files.push({ path: p, sha256: sha256Normalized(content), status: "skipped" });
@@ -209,9 +278,32 @@ function recordDirsCreated(destAbs) {
   }
 }
 
+/**
+ * Is the file already on disk byte-for-byte what we are about to write?
+ *
+ * Compared with line endings normalized, for the same reason the manifest
+ * hashes that way: a CRLF checkout on Windows is not an edit. When this is
+ * true there is nothing to overwrite, so G4 has nothing left to protect — a
+ * .new sibling would just be a copy of the file next to it, and a reinstall
+ * would bury the user in them.
+ */
+function sameAsOnDisk(destAbs, content) {
+  try {
+    return sha256Normalized(fs.readFileSync(destAbs)) === sha256Normalized(content);
+  } catch (e) {
+    return false; // unreadable: treat as different, the .new path handles it
+  }
+}
+
 function copyFile(srcRel, destAbs, { mode } = {}) {
   const src = path.join(TEMPLATES, srcRel);
   const content = fs.readFileSync(src);
+  if (fs.existsSync(destAbs) && sameAsOnDisk(destAbs, content)) {
+    if (mode) fs.chmodSync(destAbs, mode);
+    console.log(`  = ${rel(destAbs)} (sin cambios)`);
+    recordFile(destAbs, content, "unchanged");
+    return "unchanged";
+  }
   if (fs.existsSync(destAbs)) {
     const newPath = destAbs + ".new";
     fs.mkdirSync(path.dirname(newPath), { recursive: true });
@@ -231,11 +323,21 @@ function copyFile(srcRel, destAbs, { mode } = {}) {
 }
 
 let TARGET_ROOT = process.cwd();
+
+// Captured before this run writes anything, so a reinstall can carry forward
+// what the first install did and cannot observe a second time.
+let PREVIOUS_MANIFEST = null;
 function rel(p) {
   return path.relative(TARGET_ROOT, p) || ".";
 }
 
 function writeText(destAbs, content, { mode } = {}) {
+  if (fs.existsSync(destAbs) && sameAsOnDisk(destAbs, content)) {
+    if (mode) fs.chmodSync(destAbs, mode);
+    console.log(`  = ${rel(destAbs)} (sin cambios)`);
+    recordFile(destAbs, content, "unchanged");
+    return "unchanged";
+  }
   if (fs.existsSync(destAbs)) {
     const newPath = destAbs + ".new";
     fs.mkdirSync(path.dirname(newPath), { recursive: true });
@@ -564,6 +666,68 @@ function vendorIgnoredStatus(target) {
   }
 }
 
+/**
+ * Keep the generated git hooks LF-only, in every clone.
+ *
+ * A hook checked out with CRLF dies on Linux and macOS with
+ * `/usr/bin/env: 'sh\r': No such file or directory` — and `core.autocrlf=true`,
+ * the default on Windows installs of Git, produces exactly that for anyone who
+ * clones after a Windows developer commits. The hook is still there, still
+ * executable, and still never runs.
+ *
+ * Additive and line-exact like ensureGitignore, recorded in the manifest so the
+ * uninstaller takes back its own lines and nothing else.
+ */
+function ensureGitattributes(target) {
+  const ga = path.join(target, ".gitattributes");
+  const lines = [
+    "# Los git hooks tienen que quedar con LF en cualquier sistema: uno con CRLF",
+    "# falla en Linux/macOS con 'sh\\r: No such file or directory' y no corre nunca.",
+    ".husky/** text eol=lf",
+  ];
+  let existing = "";
+  const preexisting = fs.existsSync(ga);
+  if (preexisting) existing = fs.readFileSync(ga, "utf8");
+  const present = new Set(existing.split(/\r?\n/).map((l) => l.trim()));
+  const missing = lines.filter((l) => !present.has(l));
+  if (!missing.length) return missing;
+  fs.appendFileSync(ga, (existing.endsWith("\n") || existing === "" ? "" : "\n") + missing.join("\n") + "\n");
+  console.log(`  ✓ ${rel(ga)} actualizado (los hooks quedan con LF en cualquier clon)`);
+  MANIFEST.gitattributes.linesAdded = missing;
+  MANIFEST.gitattributes.created = !preexisting;
+  return missing;
+}
+
+/**
+ * Will the exec bit on the generated hooks survive this developer's commit?
+ *
+ * We chmod 0o755, but git only records mode 100755 when `core.filemode` is on —
+ * and on Windows it is off, so the hooks get committed 100644. Git then
+ * SILENTLY refuses to run them for every teammate on Linux or macOS: same class
+ * of failure as core.hooksPath, installed and visible and enforcing nothing.
+ *
+ * The installer cannot fix this itself. `git update-index --chmod=+x` only works
+ * on tracked files, and ours are untracked until the user commits them — and
+ * staging on their behalf is exactly what G17 forbids. So: detect it, and hand
+ * over the one command that fixes it, instead of letting them find out from a
+ * colleague whose hooks never fired.
+ */
+function fileModeWillBeLost(target) {
+  if (!fs.existsSync(path.join(target, ".git"))) return false;
+  try {
+    const v = execSync("git config --get core.filemode", {
+      cwd: target,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return v === "false";
+  } catch (e) {
+    // Unset: git's default is true wherever it can honor the bit. Windows writes
+    // it false at init, so an unset value means we are not on that platform.
+    return false;
+  }
+}
+
 function ensureGitignore(target) {
   const gi = path.join(target, ".gitignore");
   const lines = [
@@ -661,6 +825,7 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
   }
 
   TARGET_ROOT = args.target;
+  PREVIOUS_MANIFEST = loadPreviousManifest(TARGET_ROOT);
 
   // Delegate to the scripts that live in the target. Each operation has exactly
   // one home (.agent-security/uninstall.js, .agent-security/toggle.js) so the
@@ -802,9 +967,14 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
           // stops running, with nothing to replace it.
           status = writeText(dest, buildPassthroughHook(hook, chained.ref), { mode: 0o755 });
         }
-        if (status === "skipped" && existingHookAlreadyChained(dest, hook, chained.ref)) {
-          // A reinstall over our own work. The .new is just G4 doing its job;
-          // the file that is actually there already chains the same origin.
+        if (status === "unchanged") {
+          // A reinstall over our own work, byte for byte. Nothing was written and
+          // nothing needs to be: the hook on disk already chains the same origin.
+          console.log(`    ✓ ${hook} ya estaba encadenado (idéntico al que generaríamos)`);
+          MANIFEST.git.shims.push(hook);
+        } else if (status === "skipped" && existingHookAlreadyChained(dest, hook, chained.ref)) {
+          // Same origin chained, but the file differs from what we would write
+          // (an edit of ours, or an older kit version). G4 keeps theirs.
           console.log(`    ✓ ${hook} ya estaba encadenado (dejo el que hay; revisá el .new si querés el nuevo)`);
           MANIFEST.git.shims.push(hook);
         } else if (status === "skipped") {
@@ -861,13 +1031,14 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
       console.log(
         "\nCI: no se generó ningún archivo — no se detectó (ni se indicó con --ci) un host " +
           "soportado. Corré de nuevo con --ci github o --ci gitlab, o armá tu pipeline a mano " +
-          "usando .agent-security/test_policy_engine.py y los checks de RULES.md como referencia."
+          "usando .agent-security/test_policy_engine.js y los checks de RULES.md como referencia."
       );
     }
   }
 
   console.log("\nProtecciones extra:");
   ensureGitignore(TARGET_ROOT);
+  if (installGitHooks) ensureGitattributes(TARGET_ROOT);
 
   // Last, so it records everything above it. This is what makes uninstalling a
   // verifiable operation instead of a guess.
@@ -877,7 +1048,18 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
     ciHost: installGitHooks ? ciHost || "none" : "none",
     gitHooks: !!installGitHooks,
   };
+  carryForwardPreviousManifest(TARGET_ROOT, PREVIOUS_MANIFEST);
   writeManifest(TARGET_ROOT);
+
+  const execBitStep =
+    installGitHooks && fileModeWillBeLost(TARGET_ROOT)
+      ? "\n     [obligatorio] Tu git no guarda el bit de ejecución (core.filemode=false, el" +
+        "\n     default en Windows). Si commiteás los hooks así, git los va a IGNORAR en" +
+        "\n     silencio en cada clon de Linux/macOS. Después de 'git add', corré una vez:" +
+        "\n       git update-index --chmod=+x .husky/pre-commit .husky/pre-push" +
+        "\n     No puedo hacerlo yo: sólo funciona sobre archivos ya trackeados, y este kit" +
+        "\n     no toca el índice de tu repo. El CI generado lo verifica igual y falla si falta."
+      : "";
 
   const hooksStep = !installGitHooks
     ? "  4. (omitido) No se instalaron git hooks en esta corrida."
@@ -888,6 +1070,7 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
     : hooksPathStatus === "unsafe-skipped"
     ? "  4. [decisión tuya] No configuré 'core.hooksPath' para no apagarte hooks tuyos que no pude encadenar — ver el detalle más arriba."
     : "  4. [obligatorio] Corré 'git config core.hooksPath .husky' a mano — no se pudo configurar automáticamente.";
+  const hooksStepFull = hooksStep + execBitStep;
 
   const ciStep = !installGitHooks
     ? "  5. (omitido) No se instalaron git hooks/CI en esta corrida — volvé a correr el instalador si los querés."
@@ -896,6 +1079,13 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
     : ciHost === "gitlab"
     ? "  5. [recomendado] Configurar merge request approval rules / push rules en GitLab apuntando al pipeline '.gitlab-ci.yml'."
     : "  5. [pendiente] No se generó CI — armalo a mano o volvé a correr el instalador con --ci github|gitlab.";
+
+  // Built from what this run actually did, not from what it might have done: a
+  // step that says "ya existía uno con ese nombre" when nothing was skipped
+  // teaches the reader to skim the list instead of acting on it.
+  const newFilesStep = MANIFEST.newFiles.length
+    ? `  3. [obligatorio] Revisar y mergear a mano ${MANIFEST.newFiles.length} archivo(s) *.new: ya existía uno con ese nombre, así que no lo pisé.`
+    : "  3. [no aplica] No se escribió ningún *.new: no había nada que pisar.";
 
   const nodeInfo = checkNodeRuntime();
   const nodeWarnings = [];
@@ -925,8 +1115,8 @@ Stacks soportados: ${Object.keys(STACKS).join(", ")}
 Listo. Próximos pasos:
 ${nodeStep}
   2. [recomendado] node .agent-security/test_policy_engine.js
-  3. [si aplica] Revisar cualquier archivo *.new (ya existía uno con ese nombre) y mergearlo a mano.
-${hooksStep}
+${newFilesStep}
+${hooksStepFull}
 ${ciStep}
   6. [opcional] Editar .agent-security/policy.yaml a gusto — es la única fuente de verdad para las reglas.
 

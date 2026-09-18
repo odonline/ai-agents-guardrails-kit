@@ -261,7 +261,17 @@ test("vendored js-yaml matches the SHA-256 recorded in VENDOR.md", () => {
   const crypto = require("crypto");
   const vendorDir = path.join(KIT_ROOT, "templates/common/vendor");
   const bundle = fs.readFileSync(path.join(vendorDir, "js-yaml.js"));
-  const actual = crypto.createHash("sha256").update(bundle).digest("hex");
+  // Normalized, for the same reason kit_manifest.js hashes that way: with
+  // core.autocrlf=true — the default on Windows installs of Git — the working
+  // copy is CRLF while the blob in git is LF, so hashing raw bytes fails this
+  // test on every Windows checkout while passing in Linux CI. That is a false
+  // alarm about the one thing the test exists to catch, which is worse than no
+  // test: it trains contributors to ignore an integrity failure. Line endings
+  // are not a supply-chain edit; any real change to the bundle still fails.
+  const actual = crypto
+    .createHash("sha256")
+    .update(bundle.toString("utf8").replace(/\r\n/g, "\n"), "utf8")
+    .digest("hex");
   const doc = fs.readFileSync(path.join(vendorDir, "VENDOR.md"), "utf8");
   const recorded = (doc.match(/\b[0-9a-f]{64}\b/) || [])[0];
   assert(recorded, "VENDOR.md must record a SHA-256 for the vendored bundle");
@@ -2410,6 +2420,231 @@ test("a half-removed install and a broken engine get their own distinct reasons"
   assert(d2.action === "deny", "must fail closed when the engine will not parse");
   assert(!/js-yaml/.test(d2.reason), "must not blame the parser when it is present");
   assert(!/half-removed/.test(d2.reason), "must not claim a half-removed install when the directory is there");
+});
+
+test("a reinstall rewrites nothing and writes no .new when content is identical", () => {
+  // The .new noise was the visible half. The invisible half was worse: the second
+  // install recorded every file as "skipped" (= the project already had it), and
+  // classifyFile maps that to "preexisting", so uninstall.js concluded the whole
+  // kit belonged to the user and deleted NOTHING — leaving the hooks wired.
+  const dir = mkTmp("reinstall-identical");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir, "https://github.com/acme/demo.git");
+  const args = ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--ci", "github", "--yes"];
+  runInstall(dir, args);
+  const out = runInstall(dir, args);
+
+  const stray = [];
+  (function walk(d) {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.name === ".git") continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".new")) stray.push(path.relative(dir, p));
+    }
+  })(dir);
+  assert(stray.length === 0, `reinstall wrote .new files: ${stray.join(", ")}`);
+  assert(/sin cambios/.test(out), "reinstall should report files as unchanged");
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".agent-security/install-manifest.json"), "utf8"));
+  const engine = manifest.files.find((e) => e.path === ".agent-security/policy_engine.js");
+  assert(engine, "manifest must still record the engine");
+  assert(
+    engine.status === "written",
+    `a reinstall must keep owning its own files, got status "${engine.status}" — uninstall would refuse to remove them`
+  );
+});
+
+test("a genuinely different existing file still gets a .new (G4)", () => {
+  // The skip must be about content, not about existence: an edited file is still
+  // the user's, and never overwriting it is the whole point of G4.
+  const dir = mkTmp("reinstall-edited");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "false", "--ci", "none", "--yes"]);
+  const engine = path.join(dir, ".agent-security/policy_engine.js");
+  fs.writeFileSync(engine, fs.readFileSync(engine, "utf8") + "\n// mío\n");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "false", "--ci", "none", "--yes"]);
+  assert(exists(engine + ".new"), "an edited file must still get a .new sibling");
+  assert(/\/\/ mío/.test(fs.readFileSync(engine, "utf8")), "the user's edit must survive untouched");
+});
+
+test("installing git hooks pins them to LF via .gitattributes", () => {
+  // A hook checked out with CRLF dies on Linux/macOS with "sh\r: not found",
+  // which is what core.autocrlf=true produces for everyone who clones after a
+  // Windows developer commits.
+  const dir = mkTmp("gitattributes");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir, "https://github.com/acme/demo.git");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--ci", "github", "--yes"]);
+  const ga = path.join(dir, ".gitattributes");
+  assert(exists(ga), ".gitattributes must be written when git hooks are installed");
+  assert(/\.husky\/\*\* text eol=lf/.test(fs.readFileSync(ga, "utf8")), "must pin .husky/** to LF");
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".agent-security/install-manifest.json"), "utf8"));
+  assert(
+    manifest.gitattributes && manifest.gitattributes.linesAdded.length,
+    "the manifest must record the lines so uninstall can take back exactly those"
+  );
+});
+
+test("the installer never writes .gitattributes without installing hooks", () => {
+  // Nothing to pin to LF, so nothing to add to the user's repo.
+  const dir = mkTmp("gitattributes-none");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir, "https://github.com/acme/demo.git");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "false", "--ci", "none", "--yes"]);
+  assert(!exists(path.join(dir, ".gitattributes")), "no hooks installed means no .gitattributes");
+});
+
+test("uninstall takes back its .gitattributes lines and nothing else", () => {
+  const dir = mkTmp("gitattributes-uninstall");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  fs.writeFileSync(path.join(dir, ".gitattributes"), "*.png binary\n");
+  gitInit(dir, "https://github.com/acme/demo.git");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--ci", "github", "--yes"]);
+  execFileSync("node", [path.join(dir, ".agent-security/uninstall.js"), "--yes"], {
+    cwd: dir,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const after = fs.readFileSync(path.join(dir, ".gitattributes"), "utf8");
+  assert(/\*\.png binary/.test(after), "the project's own line must survive");
+  assert(!/husky/.test(after), "our lines must be gone");
+});
+
+test("both CI formats fail the build when a hook lost its exec bit", () => {
+  // Git silently skips a hook that is not executable, and Windows commits them
+  // 100644 because core.filemode is off there. The installer cannot fix it
+  // (update-index only works on tracked files, and G17 forbids touching the
+  // index), so CI is where forgetting it has to stop being silent.
+  const { buildCiWorkflow, buildGitlabCiYaml } = require(path.join(KIT_ROOT, "generate.js"));
+  for (const [name, yaml] of [["github", buildCiWorkflow(["node"])], ["gitlab", buildGitlabCiYaml(["node"])]]) {
+    assert(/100755/.test(yaml), `${name} CI must assert the hook mode`);
+    assert(/git ls-files -s/.test(yaml), `${name} CI must read the mode from the index`);
+    assert(/update-index --chmod=\+x/.test(yaml), `${name} CI must name the fix`);
+  }
+});
+
+test("the summary does not claim a .new exists when none was written", () => {
+  const dir = mkTmp("summary-new");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  const out = runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "false", "--ci", "none", "--yes"]);
+  assert(/\[no aplica\] No se escribió ningún \*\.new/.test(out), "a clean install must say no .new was written");
+});
+
+test("uninstall names the logs it deliberately leaves behind", () => {
+  // Not deleted on purpose — they are the record of what the guardrails did, and
+  // that record is the user's. But "Conservados: 0" while leaving files behind
+  // is the kind of quiet inaccuracy G15 exists to prevent.
+  const dir = mkTmp("uninstall-logs");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir, "https://github.com/acme/demo.git");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--ci", "github", "--yes"]);
+  fs.writeFileSync(path.join(dir, ".agent-security/audit.log"), "{}\n");
+  const out = execFileSync("node", [path.join(dir, ".agent-security/uninstall.js"), "--yes"], {
+    cwd: dir,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert(/audit\.log/.test(out), "uninstall must name the audit log it keeps");
+  assert(fs.existsSync(path.join(dir, ".agent-security/audit.log")), "and must not delete it");
+});
+
+test("uninstall after a reinstall is still a complete round trip", () => {
+  // The manifest is rebuilt every run, but three of its fields describe things
+  // that happened once and cannot be observed again: the .gitignore and
+  // .gitattributes lines we appended (a reinstall finds them already there and
+  // appends nothing) and the directories we created. Rebuilt from a reinstall
+  // they come back empty, and uninstall then leaves our lines in the user's
+  // .gitignore and our empty directories behind, permanently.
+  const dir = mkTmp("reinstall-roundtrip");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  fs.writeFileSync(path.join(dir, ".gitignore"), "node_modules/\n");
+  gitInit(dir, "https://github.com/acme/demo.git");
+  const args = ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "true", "--ci", "github", "--yes"];
+  runInstall(dir, args);
+  runInstall(dir, args);
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(dir, ".agent-security/install-manifest.json"), "utf8"));
+  assert(manifest.gitignore.linesAdded.length > 0, "a reinstall must not forget the .gitignore lines it owns");
+  assert(manifest.gitattributes.linesAdded.length > 0, "a reinstall must not forget the .gitattributes lines it owns");
+  assert(manifest.dirsCreated.length > 0, "a reinstall must not forget the directories the first install created");
+
+  execFileSync("node", [path.join(dir, ".agent-security/uninstall.js"), "--yes"], {
+    cwd: dir,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  assert(
+    fs.readFileSync(path.join(dir, ".gitignore"), "utf8").trim() === "node_modules/",
+    "the .gitignore must come back to exactly what the project had"
+  );
+  assert(!exists(path.join(dir, ".gitattributes")), "a .gitattributes we created must be gone");
+  assert(!exists(path.join(dir, ".claude")), "directories we created must be gone");
+  assert(!exists(path.join(dir, ".husky")), "directories we created must be gone");
+});
+
+test("bare --git-hooks does not swallow the flag after it", () => {
+  // --help documents the bare form, but it used to consume the next token
+  // unconditionally: `--git-hooks --yes` parsed as gitHooks=true and no --yes,
+  // so a run scripted to be non-interactive stopped at a prompt instead.
+  const dir = mkTmp("githooks-bare");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir, "https://github.com/acme/demo.git");
+  const out = execFileSync(
+    "node",
+    [INSTALL, "--target", dir, "--agents", "claude-code", "--stacks", "node", "--ci", "github", "--git-hooks", "--yes"],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60000 }
+  );
+  assert(exists(path.join(dir, ".husky/pre-commit")), "bare --git-hooks must still install the hooks");
+  assert(exists(path.join(dir, ".github/workflows/security.yml")), "and --ci must still be honored");
+  assert(/Listo\. Próximos pasos/.test(out), "and --yes must survive, so the run finishes without prompting");
+});
+
+test("--git-hooks false still turns the hooks off", () => {
+  const dir = mkTmp("githooks-false");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  gitInit(dir, "https://github.com/acme/demo.git");
+  runInstall(dir, ["--agents", "claude-code", "--stacks", "node", "--git-hooks", "false", "--ci", "none", "--yes"]);
+  assert(!exists(path.join(dir, ".husky")), "--git-hooks false must not write hooks");
+});
+
+test("every generated CI file is valid YAML, for every stack and both hosts", () => {
+  // Found in the field: the PHP profile's checks start with `[ -x vendor/bin/... `,
+  // and an unquoted YAML value opening with "[" is a flow sequence — so the GitHub
+  // workflow for any PHP project was syntactically invalid and GitHub refused to
+  // run it. The pipeline is the layer that cannot be bypassed with --no-verify, so
+  // a project whose only real enforcement layer never runs is the worst possible
+  // silent failure. The GitLab builder already quoted; the GitHub one did not.
+  const yaml = require(path.join(KIT_ROOT, "templates/common/vendor/js-yaml.js"));
+  const { buildCiWorkflow, buildGitlabCiYaml } = require(path.join(KIT_ROOT, "generate.js"));
+  for (const stack of Object.keys(STACK_MARKERS)) {
+    for (const [host, text] of [["github", buildCiWorkflow([stack])], ["gitlab", buildGitlabCiYaml([stack])]]) {
+      let doc;
+      try {
+        doc = yaml.load(text);
+      } catch (e) {
+        assert(false, `${host} CI for stack "${stack}" is not valid YAML: ${e.message.split("\n")[0]}`);
+      }
+      assert(doc && typeof doc === "object", `${host} CI for stack "${stack}" parsed to nothing`);
+    }
+  }
+});
+
+test("generated CI runs every check command the stack declares", () => {
+  // Quoting the run: values must not change what they run.
+  const yaml = require(path.join(KIT_ROOT, "templates/common/vendor/js-yaml.js"));
+  const { buildCiWorkflow } = require(path.join(KIT_ROOT, "generate.js"));
+  const { STACKS } = require(path.join(KIT_ROOT, "stacks.js"));
+  const doc = yaml.load(buildCiWorkflow(["php"]));
+  const runs = doc.jobs.guardrails.steps.filter((st) => st.run).map((st) => String(st.run));
+  for (const check of STACKS.php.checks) {
+    assert(
+      runs.some((r) => r === check.command),
+      `the "${check.name}" command must survive YAML quoting intact`
+    );
+  }
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -98,6 +98,41 @@ or a `.husky/<hook>` the installer did not write — it does not configure
 which is the honest trade: better inactive-and-said-so than silently
 disabling a safeguard you already had.
 
+### The exec bit: the hooks have to be committed executable
+
+Git does not run a hook that is not executable, and it does not warn you — the
+same silent-inactivity failure as `core.hooksPath`, one layer down. The
+installer already `chmod`s the generated hooks to 755, so on Linux and macOS
+this takes care of itself.
+
+**On Windows it does not.** Git there sets `core.filemode=false` because NTFS
+has no exec bit to read, so it records the hooks as mode `100644` when you
+commit them. Everyone who clones after that gets hook files git refuses to run.
+The installer detects this and says so, but it cannot fix it for you: the fix
+only works on files git is already tracking, and this kit never touches your
+index or your history. So, once, after `git add` and before you commit:
+
+```bash
+git update-index --chmod=+x .husky/pre-commit .husky/pre-push
+```
+
+Check it landed — both should read `100755`:
+
+```bash
+git ls-files -s .husky/
+```
+
+The generated CI job `Hooks are executable` fails the build if this was missed,
+so a forgotten exec bit stops at the pipeline rather than at a colleague
+wondering why their commits never ran a check.
+
+The installer also writes `.gitattributes` with `.husky/** text eol=lf` when it
+installs hooks. That is the other half of the same problem: with
+`core.autocrlf=true` (the Windows default) a hook would otherwise be checked out
+with CRLF line endings and die on Linux and macOS with
+`/usr/bin/env: 'sh\r': No such file or directory`. Unlike the exec bit, that one
+the installer can fix by itself, and does.
+
 ### Everyone else on the team has to run it too
 
 This is the step that gets forgotten, because the installer cannot do it for
