@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+### `npm test` fallaba en Linux y macOS: 3 casos "pendientes" que no eran deuda
+
+El primer run de GitHub Actions (que existe recién desde esta versión) falló con:
+
+```
+FAIL - payload suite reports no pending cases once policy_engine.js exists
+  policy_engine.js exists but 3 engine case(s) are still pending — port task 02 is not done (G14)
+```
+
+No era el port: los 3 casos son `msys_drive_path_no_bypass`,
+`cygdrive_path_no_bypass` y `msys_drive_structured_no_bypass`, que construyen la
+forma MSYS (`/c/Users/...`) del home **de esta máquina** para probar que el
+bypass de Git Bash sigue cerrado. En Linux y macOS `os.homedir()` no tiene letra
+de unidad, así que no hay forma MSYS que construir y la suite los reportaba como
+`pend`. El chequeo del kit leía eso como "la tarea 02 del port no está hecha" y
+fallaba en toda máquina que no fuera Windows.
+
+`pend` y `skip` no son la misma afirmación, y juntarlas hacía que una de las dos
+mintiera:
+
+- **`pend`** = el código bajo prueba todavía no existe. Es deuda, y el CI del kit
+  falla mientras quede alguno.
+- **`skip`** = este caso no se puede expresar en esta máquina. No es deuda y no
+  se resuelve nunca.
+
+Ahora la suite del payload cuenta las dos por separado, imprime cada `skip` con
+su razón al lado, y el resumen aclara que en Linux/macOS el bypass MSYS sólo lo
+verifica una corrida en Windows.
+
+Para que "skip" no se convierta en la forma silenciosa de callar un caso
+incómodo, la lista de casos salteables está **congelada** en
+`test/install.test.js` (`SKIPPABLE_ENGINE_CASES`): si un caso se saltea sin estar
+en la lista, o sin dar razón, el CI falla. Y en Windows, donde los tres aplican,
+no se admite ningún skip.
+
+También se corrigió el comentario del bloque, que afirmaba lo contrario de lo que
+hacía el código ("These run on every platform").
+
 ## v1.0.0 — 2026-09-18
 
 Primera versión publicada del kit (motor en Node, payload con js-yaml

@@ -255,11 +255,7 @@ test("the policy.yaml shipped next to this suite loads clean", () => {
   assert(p.blocked_commands.length > 0, "a real generated policy must have blocked commands");
 });
 
-// ─────────── policy_engine (ported 1:1 from main:test_policy_engine.py) ───────────
-//
-// Case names match the Python function names exactly (minus the `test_` prefix)
-// so parity can be audited with grep instead of by reading both files. G14 says
-// a port may not drop a case; the kit's own test suite checks that mechanically.
+// ─────────── policy_engine  ───────────
 //
 // Until policy_engine.js exists (task 02) these report as `pend`, not as passes.
 // A skipped test nobody sees is worse than a missing one.
@@ -269,6 +265,22 @@ let pending = 0;
 function pend(name) {
   pending++;
   console.log(`  pend - ${name}`);
+}
+
+// `pend` and `skip` are not the same claim, and merging them loses the only
+// thing that matters about each. `pend` means the code under test does not
+// exist yet — it is a debt, and the kit's own suite fails while any remain.
+// `skip` means this case cannot be expressed on this machine: the MSYS/Cygwin
+// bypass needs a Windows-style home directory to build a `/c/Users/...` form
+// of, and on Linux and macOS there is none. That is not debt and never
+// resolves; reporting it as `pend` made CI demand that someone 'finish' a port
+// that was already done. Still printed per case, with the reason, because a
+// skipped test nobody sees is worse than a missing one.
+let skipped = 0;
+
+function skip(name, why) {
+  skipped++;
+  console.log(`  skip - ${name} (${why})`);
 }
 
 const POLICY_BESIDE_SUITE = "policy.yaml";
@@ -591,9 +603,16 @@ engineCase("read_of_protected_path_still_denies", "deny", "Read",
 // Bare patterns like `.env` still caught it by basename; `~/.ssh/**`,
 // `~/.aws/**` and `~/.config/gcloud/**` did not.
 //
-// These run on every platform: on POSIX `/c/...` is an ordinary absolute path
-// outside the workspace, which the engine denies for a different reason. Either
-// way the answer must not be `allow`.
+// These can only run where the bypass exists: they build the MSYS spelling of
+// THIS machine's home directory, so they need a Windows-style `C:\\...` home to
+// spell. On Linux and macOS there is nothing to build and the cases report as
+// `skip`, with the reason, rather than passing vacuously.
+//
+// Do not be tempted to run them anyway with a POSIX home: `/c/home/you/.ssh/...`
+// is not another way of reaching `~/.ssh/...` there, it is just a path that does
+// not exist, so a `deny` would prove nothing about the bypass. What keeps POSIX
+// honest is `non_drive_absolute_path_allowed` just below, which pins the other
+// half: a leading segment that is not a drive letter must NOT be rewritten.
 if (!engine) {
   ["msys_drive_path_no_bypass", "cygdrive_path_no_bypass", "msys_drive_structured_no_bypass"].forEach(pend);
 } else {
@@ -621,8 +640,12 @@ if (!engine) {
     });
 
   if (!drive) {
-    // No drive letter: not a Windows-style home, so there is no MSYS form of it.
-    ["msys_drive_path_no_bypass", "cygdrive_path_no_bypass", "msys_drive_structured_no_bypass"].forEach(pend);
+    // No drive letter: not a Windows-style home, so there is no MSYS form of it
+    // to attack. The bypass these cases guard against only exists where a shell
+    // rewrites `/c/...` into `C:\\...`, which is Git Bash and Cygwin on Windows.
+    ["msys_drive_path_no_bypass", "cygdrive_path_no_bypass", "msys_drive_structured_no_bypass"].forEach((n) =>
+      skip(n, "no Windows-style home directory on this platform")
+    );
   } else {
     const msys = `/${drive.toLowerCase()}${rest}/.ssh/id_rsa`;
     const cyg = `/cygdrive/${drive.toLowerCase()}${rest}/.ssh/id_rsa`;
@@ -742,11 +765,20 @@ try {
 }
 
 let summary = `\n${pass} passed, ${fail} failed`;
+if (skipped > 0) {
+  summary += `, ${skipped} skipped`;
+}
 if (pending > 0) {
   summary += `, ${pending} pending`;
   summary += `\n\npending: policy_engine.js does not exist yet — the ${pending} engine`;
   summary += `\ncases above are written and waiting for it (port task 02).`;
   summary += `\nThey are NOT passing. Do not read this run as the engine working.`;
+}
+if (skipped > 0) {
+  summary += `\n\nskipped: ${skipped} case(s) cannot apply on this platform — the reason is`;
+  summary += `\nprinted next to each one above. They are not debt and not failures, but`;
+  summary += `\nthey did not run here: on Linux and macOS the MSYS/Cygwin bypass cases`;
+  summary += `\nare only ever verified by a Windows run.`;
 }
 console.log(summary);
 if (fail > 0) process.exit(1);

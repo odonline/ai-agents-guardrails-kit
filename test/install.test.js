@@ -375,6 +375,57 @@ test("payload suite reports no pending cases once policy_engine.js exists", () =
   );
 });
 
+// The MSYS/Cygwin bypass cases need a Windows-style home directory to build the
+// `/c/Users/...` spelling of, so on Linux and macOS there is nothing to attack
+// and they report as `skip`. They used to report as `pend`, which made this
+// suite fail on every non-Windows machine demanding that someone finish a port
+// that was already finished — the kit had no CI of its own at the time, so it
+// went unnoticed until GitHub Actions ran it for the first time.
+//
+// The risk in allowing skips at all is that skipping becomes the quiet way to
+// silence an inconvenient case. So the set is frozen here: a case may only be
+// skipped if it is on this list, and each skip must carry a reason.
+const SKIPPABLE_ENGINE_CASES = [
+  "msys_drive_path_no_bypass",
+  "cygdrive_path_no_bypass",
+  "msys_drive_structured_no_bypass",
+];
+
+test("only the platform-inapplicable cases may be skipped, and each says why", () => {
+  const out = execFileSync(
+    "node",
+    [path.join(KIT_ROOT, "templates/common/test_policy_engine.js")],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+  );
+  const skips = [...out.matchAll(/^[ \t]*skip - (\S+) \((.+?)\)\s*$/gm)].map((m) => ({
+    name: m[1],
+    why: m[2],
+  }));
+
+  const unexpected = skips.filter((s) => !SKIPPABLE_ENGINE_CASES.includes(s.name));
+  assert(
+    unexpected.length === 0,
+    `these cases skipped themselves without being on the frozen list: ` +
+      unexpected.map((s) => s.name).join(", ") +
+      `. A skip is not a pass — either the case applies here and must run, or add it ` +
+      `to SKIPPABLE_ENGINE_CASES with the reason it cannot.`
+  );
+
+  for (const s of skips) {
+    assert(s.why.trim().length > 0, `${s.name} skipped without a reason`);
+  }
+
+  // On Windows all three are applicable, so nothing may be skipped at all —
+  // otherwise the one platform that CAN prove the bypass is closed might stop.
+  if (process.platform === "win32") {
+    assert(
+      skips.length === 0,
+      `on Windows every engine case applies, but ${skips.length} were skipped: ` +
+        skips.map((s) => s.name).join(", ")
+    );
+  }
+});
+
 // ── payload runtime: adapters + completion gate ───────────────────────────
 //
 // These build the layout an installed project has, then drive the real files
