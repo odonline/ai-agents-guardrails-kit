@@ -78,7 +78,7 @@ and its summary tells you which of these happened:
 Pointing `core.hooksPath` at `.husky/` does not make `.husky` win over
 the previous hooks directory — it makes git stop looking at that
 directory completely. Anything you had in `.git/hooks/` (put there by
-Python's `pre-commit`, husky v4, lefthook, or an IDE) or in your own
+other Git tooling such as husky v4, lefthook, or an IDE) or in your own
 `core.hooksPath` directory would stop running, and hook types this kit
 does not generate — `commit-msg`, `post-merge`, `pre-rebase` — would have
 had nothing to replace them.

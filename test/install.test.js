@@ -325,28 +325,6 @@ test("every Python engine test case exists in the Node suite (G14)", () => {
   );
 });
 
-test("the frozen G14 baseline still matches the Python suite", () => {
-  // Verifies the hardcoded list above against reality while the .py still
-  // exists. Once port task 12 deletes it, this self-check retires and the
-  // frozen list stands on its own (checkable against `git show main:`).
-  const py = path.join(KIT_ROOT, "templates/common/test_policy_engine.py");
-  if (!fs.existsSync(py)) {
-    console.log("    (retired: test_policy_engine.py has been removed)");
-    return;
-  }
-  const names = [...fs.readFileSync(py, "utf8").matchAll(/^def test_(\w+)\s*\(/gm)]
-    .map((m) => m[1]);
-  const extra = names.filter((n) => !PYTHON_ENGINE_CASES.includes(n));
-  const gone = PYTHON_ENGINE_CASES.filter((n) => !names.includes(n));
-  assert(
-    extra.length === 0 && gone.length === 0,
-    `frozen baseline is out of sync with test_policy_engine.py.` +
-      (extra.length ? ` Not in baseline: ${extra.join(", ")}.` : "") +
-      (gone.length ? ` In baseline but not in the .py: ${gone.join(", ")}.` : "")
-  );
-  assert(names.length === 24, `expected 24 Python cases, found ${names.length}`);
-});
-
 test("payload suite reports no pending cases once policy_engine.js exists", () => {
   // Guards the obvious way to "finish" port task 02: leave the engine cases
   // switched off and read a green suite as done.

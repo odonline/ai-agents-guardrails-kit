@@ -1,7 +1,7 @@
 /**
  * stacks.js — per-language profiles used to generate policy.yaml,
  * git hooks, and the CI workflow. The policy engine itself
- * (.agent-security/policy_engine.py) never changes — only the
+ * (the Node payload under .agent-security/) never changes — only the
  * "what counts as dangerous" and "what to run to prove completion"
  * data changes per stack.
  *

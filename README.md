@@ -200,8 +200,8 @@ instalador lo configura. El detalle que importa: **apuntar `core.hooksPath` a
 deje de mirarlo por completo.** Verificado, no asumido.
 
 Eso afecta a cualquier proyecto que ya tenga hooks propios: en `.githooks/` con
-su `core.hooksPath` puesto, o directamente en `.git/hooks/` — donde los deja el
-`pre-commit` de Python, husky v4, lefthook o algún IDE. Y como nosotros sólo
+su `core.hooksPath` puesto, o directamente en `.git/hooks/` — donde los deja
+otro tooling de Git, como husky v4, lefthook o algún IDE. Y como nosotros sólo
 generamos `pre-commit` y `pre-push`, un `commit-msg` o un `post-merge` que
 hubiera no tendría ni reemplazo: desaparecía.
 

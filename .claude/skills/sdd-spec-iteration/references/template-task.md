@@ -120,10 +120,8 @@ node install.js --target <scratch>/fixture-node --agents claude-code --stacks no
 ```
 
 ```bash
-python -m pytest <scratch>/fixture-node/.agent-security/test_policy_engine.py -q
+node <scratch>/fixture-node/.agent-security/test_policy_engine.js
 ```
-
-(After the Node port: `node <scratch>/fixture-node/.agent-security/test_policy_engine.js`)
 
 Repeat the install + engine suite for every stack and harness this task touches.
 

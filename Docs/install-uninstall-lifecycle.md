@@ -77,7 +77,7 @@ Pointing `core.hooksPath` at `.husky` does not make `.husky` "win" over
 whatever directory was effective before — it makes git **stop looking at
 the old directory entirely**. That matters for any project that already had
 hooks: in `.githooks/` with its own `core.hooksPath` set, or directly in
-`.git/hooks/` (where Python's `pre-commit`, husky v4, lefthook, or an IDE
+Where other Git tooling such as husky v4, lefthook, or an IDE
 leave them). And since this kit only generates `pre-commit` and `pre-push`,
 a project's own `commit-msg` or `post-merge` hook would have no replacement
 at all — it would simply disappear.

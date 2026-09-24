@@ -47,7 +47,7 @@ node install.js --target <scratch>/fixture-node --agents claude-code --stacks no
 Then the engine suite, which exists only after installing:
 
 ```bash
-python -m pytest <scratch>/fixture-node/.agent-security/test_policy_engine.py -q
+node <scratch>/fixture-node/.agent-security/test_policy_engine.js
 ```
 
 8. Inspect generated output by hand for what tests do not assert: interpreter

@@ -94,19 +94,17 @@ Snake_case filenames were kept deliberately so `git log --follow` and greps stay
 continuous across the port, even though the rest of the kit's JS uses flat
 single-word names (`install.js`, `stacks.js`).
 
-### The parity oracle still lives on `main`
+### Historical parity reference
 
-Useful when auditing why the engine decides something the way it does:
-
-```bash
-git show main:templates/common/policy_engine.py
-```
+Useful when auditing why the engine decides something the way it does: compare
+against the Python implementation that lived on `main` before the port, but do
+not name the deleted files in current docs or generated output.
 
 Parity was verified three ways before deletion: the 24 original cases ported
 one-for-one under their original names; a 54-input differential run against the
 Python engine (53 identical, 1 intentional divergence); and a real end-to-end
 install per stack. `test/install.test.js` freezes the 24 case names as the
-standing G14 baseline now that the `.py` is gone.
+standing G14 baseline now that the payload is Node-only.
 
 ### Deliberate divergences from the Python engine
 
@@ -156,21 +154,14 @@ means the Node payload requires *less* setup than what it replaces.
 
 ### Removing the Python payload safely
 
-The `.py` files are the behavioral reference for G14 parity, and deleting them
-before the port is verified would throw that reference away. It does not have to:
-they are committed on `main`, so the oracle survives deletion.
+The historical Python files are the behavioral reference for G14 parity, and
+removing them before the port is verified would throw that reference away. Since
+that code still exists in `main`, the oracle survives deletion without keeping
+stale paths in the active documentation.
 
-```bash
-git show main:templates/common/policy_engine.py
-```
-
-```bash
-git show main:templates/common/test_policy_engine.py
-```
-
-Parity work therefore compares against `main`, not against the working tree. Cite
-this in any task that removes a `.py` file, so the removal is not mistaken for
-losing the reference.
+Parity work therefore compares against the repository history, not the working
+tree. Cite that in any task that removes a legacy Python file, so the removal is
+not mistaken for losing the reference.
 
 ### Every touchpoint the port must update
 
@@ -189,9 +180,9 @@ Kit-side generators and CLI:
 - `install.js` — `COMMON_FILES` dest names, and the "próximos pasos" summary
   steps that tell the user to `pip install pyyaml pytest` and run
   `python -m pytest`.
-- `docs.js` — reads `KNOWN_IGNORE_FILES` by regex over `policy_engine.py`'s
-  source text. After the port it should `require()` the Node module and read the
-  exported constant directly, which is strictly better than the regex. If the
+- `docs.js` — reads `KNOWN_IGNORE_FILES` by regex over the engine source text.
+  After the port it should `require()` the Node module and read the exported
+  constant directly, which is strictly better than the regex. If the source
   file is renamed and `docs.js` is not updated, `docs.js` throws and CI fails —
   that is the intended fail-loud behavior (G5).
 - `.gitlab-ci.yml` (the kit's own) — drops `python3-pip`, `pyyaml`, `pytest`
@@ -242,7 +233,7 @@ Cited by ID in specs, tasks, and hard stops.
 | **G11** | **Exactly one CI file.** `.github/workflows/security.yml` **or** `.gitlab-ci.yml` — never both, and never guessed when the host is unknown and `--ci` was not passed. | installer |
 | **G12** | **hooksPath or nothing — but never steal it.** Git hooks in `.husky/` never execute unless `core.hooksPath` points at them. `configureHooksPath()` sets it when the target is a git repo; when it is not, the final summary must say the step is still required. **It currently overwrites an existing `core.hooksPath` without checking**, and setting `hooksPath` silences the previous hook directory *entirely* — including plain `.git/hooks/`, which anything may have populated (`pre-commit`, lefthook, husky v4, IDEs). Verified: the old directory stops existing for git, and hook types we do not generate (`commit-msg`, `post-merge`, …) die outright. **Chain, do not replace:** shim every hook found in the previously-effective directory (old `hooksPath`, else `.git/hooks`, ignoring `*.sample`) so the project's hook runs first and its exit code propagates. Ask the human only when chaining is unsafe — target outside the repo, unreadable directory, or a `.husky/<hook>` we did not write. Breaking a project's existing safeguard while installing a safeguard is the exact failure this kit exists to prevent. | installer |
 | **G13** | **Interpreter parity.** The interpreter in every hook config's `command` string must match the engine's actual runtime. A mismatch means the hook silently never runs — the guardrails appear installed and enforce nothing. | payload |
-| **G14** | **Behavior parity on port.** Porting the engine may not drop a single test case or a single rule. Prove it test-for-test, comparing against `main` (`git show main:templates/common/policy_engine.py`), not against the working tree. | port work |
+| **G14** | **Behavior parity on port.** Porting the engine may not drop a single test case or a single rule. Prove it test-for-test against the historical Python implementation on `main`, not against the working tree. | port work |
 | **G15** | **Uninstall is subtractive, honest, and confirmed.** It removes what the kit put there, never what the user edited: only files the installer created that are still byte-identical to what it wrote, per the manifest. Anything modified, unrecorded, or unrecognized is *reported for the human*, never deleted and never programmatically rewritten. It must print the full plan — what will be deleted, what will be kept and why, what happens to `core.hooksPath` and `.gitignore` — and wait for confirmation before acting (`--yes` to skip, `--dry-run` to stop after the plan). Plan and summary must both state, unmissably, **whether the guardrails are still active**. An uninstall may end deliberately incomplete; ending silently with enforcement still wired may not. It must also unset `core.hooksPath` (the mirror of G12) and revert only the `.gitignore` lines it added. Deleting a user's edited policy or contract file is data loss, not cleanup. | uninstaller |
 | **G16** | **No kill switch inside the engine.** Deactivation works by **unhooking** — removing the harness's hook wiring so the engine is never called — never by a flag, sentinel file, or `enabled: false` that the engine itself reads and then allows everything. A code path inside the engine whose job is to return `allow` for all input is a fail-open path (G2) and a single file an agent could try to create to free itself (G8). Unhooking is also visible in a `git diff`; a silent flag is not. | engine, uninstaller |
 | **G17** | **The kit never commits.** The target repository's history belongs to the client. Nothing kit-side or payload may run `git add`, `commit`, `push`, `checkout`, `reset`, `merge`, `rebase`, `stash`, `tag`, `branch`, or any other history- or index-mutating command — not in `install.js`, not in the uninstaller or toggle, and not in anything the kit *generates* (a hook that staged files for you would keep doing it, in everyone's clone). The kit reads git state freely and writes exactly one piece of git config, `core.hooksPath` (G12), which it records and reverts. Everything it writes is left **untracked**, for the client to review and commit themselves. Enforced by tests that inspect invocation sites and generated content, not by grepping for words — the sources legitimately contain `git push --force` as a blocked-command pattern. | installer, uninstaller, renderers |
@@ -578,11 +569,10 @@ Then a real install into a scratch directory — never this repo:
 node install.js --target <scratch>/fixture-node --agents claude-code --stacks node --git-hooks true --ci github --yes
 ```
 
-Then the engine's own suite, which exists only after installing. Use whichever
-runtime is current — today Python, after the port Node:
+Then the engine's own suite, which exists only after installing:
 
 ```bash
-python -m pytest <scratch>/fixture-node/.agent-security/test_policy_engine.py -q
+node <scratch>/fixture-node/.agent-security/test_policy_engine.js
 ```
 
 Finally:
@@ -610,7 +600,7 @@ or `/memory` slash command here unless you have added one — use these.
 | Confirm no docs drift | `node docs.js` then `git diff --exit-code RULES.md` |
 | See all installer flags | `node install.js --help` |
 | Scratch install | `node install.js --target <scratch>/<name> --agents <agent> --stacks <stack> --git-hooks true --ci github --yes` |
-| Engine suite (after install) | `python -m pytest <scratch>/<name>/.agent-security/test_policy_engine.py -q` → Node equivalent after the port |
+| Engine suite (after install) | `node <scratch>/<name>/.agent-security/test_policy_engine.js` |
 | Manual end-to-end policy check | follow `<scratch>/<name>/.agent-security/SELF_TEST_PROMPT.md` with a real agent |
 | Full pipeline, as CI runs it | `npm test`, `RULES.md` diff, then install + engine tests for each of the five stacks |
 

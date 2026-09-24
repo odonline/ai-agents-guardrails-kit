@@ -42,7 +42,7 @@ Read this before starting any task in this folder.
 | Confirm no docs drift | `node docs.js` then `git diff --exit-code RULES.md` |
 | See installer flags | `node install.js --help` |
 | Scratch install | `node install.js --target <scratch>/<name> --agents <agent> --stacks <stack> --git-hooks true --ci github --yes` |
-| Engine suite (post-install only) | today `python -m pytest <scratch>/<name>/.agent-security/test_policy_engine.py -q`; after the Node port `node <scratch>/<name>/.agent-security/test_policy_engine.js` |
+| Engine suite (post-install only) | `node <scratch>/<name>/.agent-security/test_policy_engine.js` |
 | End-to-end policy check | follow `<scratch>/<name>/.agent-security/SELF_TEST_PROMPT.md` with a real agent |
 
 There is no `/test`, `/audit`, `/manage-migrations`, or `/memory` command in this
