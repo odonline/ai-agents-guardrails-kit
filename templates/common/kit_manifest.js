@@ -29,6 +29,7 @@ const HOOK_CONFIGS = [
   { harness: "claude-code", path: ".claude/settings.json" },
   { harness: "vscode-codex", path: ".github/hooks/security.json" },
   { harness: "antigravity", path: ".agents/hooks.json" },
+  { harness: "opencode", path: ".opencode/plugins/guardrails.js" },
 ];
 
 /** Suffix used by toggle.js to park a hook config without editing it. */

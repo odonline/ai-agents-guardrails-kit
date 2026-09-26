@@ -76,7 +76,7 @@ overrides all of it.
 | G4 | Never overwrite; write `.new` | installer |
 | G5 | `RULES.md` regenerated, never hand-edited | core rule changes |
 | G6 | Stack parity: `ci` + `gitlabCi` + `STACK_MARKERS` | `stacks.js` changes |
-| G7 | Harness parity: three adapters + three hook configs | engine contract changes |
+| G7 | Harness parity: every supported integration + its wiring | engine contract changes |
 | G8 | Self-protection always `ask` | engine changes |
 | G9 | Ignore-file negation never honored | engine changes |
 | G10 | Cross-platform; `npm test` passes on Windows | kit JS changes |
@@ -106,7 +106,7 @@ Stop and ask before:
 - Making the installer overwrite a file (G4).
 - Hand-editing `RULES.md` (G5).
 - A stack without `gitlabCi` or a `STACK_MARKERS` fixture (G6).
-- An engine contract change that reaches fewer than all three harnesses (G7, G13).
+- An engine contract change that reaches fewer than all supported harnesses (G7, G13).
 - Weakening self-protection (G8) or honoring `!negation` lines (G9).
 - Anything Windows-breaking (G10).
 - Emitting both CI files or guessing an unknown host (G11).

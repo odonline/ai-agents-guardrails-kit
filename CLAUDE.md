@@ -120,25 +120,28 @@ explanation of each step ships as `.agent-security/POST_INSTALL.md`
 `evaluate(tool_name, tool_input, ...)`, called by every per-harness
 adapter (`templates/claude-code/hooks/pretooluse.js`,
 `templates/vscode-codex/hooks/pretooluse.js`,
-`templates/antigravity/scripts/pretooluse.js`). Adapters only translate
-harness-specific JSON in/out; **all actual logic lives in this one
+`templates/antigravity/scripts/pretooluse.js`) and the OpenCode plugin
+(`templates/opencode/plugins/guardrails.js`). Integrations only translate
+harness-specific inputs and outputs; **all actual logic lives in this one
 module** so there is exactly one place to audit. It never varies by
 project language — only the data in `policy.yaml` (generated per-stack)
 does.
 
 Evaluation order inside `evaluate()`:
-1. Structured file tool calls (`Write`/`Edit`/etc. with a `file_path`) —
+1. Recursive content-search scopes — inspect reachable files against the
+  protected-path rules before a harness searches them.
+2. Structured file tool calls (`Write`/`Edit`/etc. with a `file_path`) —
    resolve the path (symlinks, `~`, relative-to-workspace), deny if it
    escapes the workspace root or matches `protected_paths`.
-2. Shell commands — match against `blocked_commands` regexes first, then
+3. Shell commands — match against `blocked_commands` regexes first, then
    tokenize the command (best-effort, not a real shell parser — see
    `_command_touches_protected_path`) and check every path-like token
    against the same `protected_paths`.
-3. Guardrail self-protection — editing/deleting `.agent-security/**`, any
+4. Guardrail self-protection — editing/deleting `.agent-security/**`, any
    harness's hook config, or any of the `KNOWN_IGNORE_FILES` always
-   returns `ask`, checked for both structured calls and shell commands,
+  returns `deny`, checked for both structured calls and shell commands,
    so an agent can't disable its own guardrails mid-session.
-4. Default: `allow`.
+5. Default: `allow`.
 
 `protected_paths` merges two live sources every call (mtime-cached, not
 baked in at install time): `policy.yaml`'s own list, and whatever
@@ -157,10 +160,10 @@ agent's claim that tests passed, and appends a report to
 - New stack/language → one entry in `stacks.js` (see `HOWTO.md` for
   the exact shape, including the `gitlabCi` field) — also add its marker
   fixture to `STACK_MARKERS` in `test/install.test.js`.
-- New agent/harness → new `templates/<agent>/` adapter that translates
-  that harness's JSON to/from `policy_engine.evaluate_from_dict()`, plus
-  an entry in `install.js`'s `AGENTS` map. Never put harness-specific
-  parsing inside `policy_engine.js`.
+- New agent/harness → add a translation-only integration under
+  `templates/<agent>/` and an entry in `install.js`'s `AGENTS` map. OpenCode
+  uses its local plugin API; other harnesses use adapters. Never put
+  harness-specific parsing inside `policy_engine.js`.
 - Changing core (language-agnostic) rules → edit
   `CORE_BLOCKED_COMMANDS`/`CORE_PROTECTED_PATHS` in `generate.js`, then run
   `node docs.js` to regenerate `RULES.md` (CI fails if you forget).

@@ -70,7 +70,7 @@ corresponding contracts and hard stops.
 | **Runtime policy engine** | `templates/common/policy_engine.*` | payload | G2 fail-closed, G3 single audit point, G8 self-protection, G9 no negation | engine test suite against a fresh install |
 | **Completion gate** | `templates/common/final_check.*` | payload | Re-executes `required_checks` from `policy.yaml`; never trusts the agent's claim | run it inside a fresh install |
 | **Harness adapters** | `templates/claude-code/hooks/pretooluse.*`, `templates/vscode-codex/hooks/pretooluse.*`, `templates/antigravity/scripts/pretooluse.*` | payload | G3 — translation only, zero decision logic; G7 harness parity | one install per harness |
-| **Harness hook configs** | `templates/claude-code/settings.json`, `templates/vscode-codex/hooks/security.json`, `templates/antigravity/hooks.json` | payload | G7, G13 interpreter parity — each hardcodes the interpreter and the adapter path | inspect generated files after install |
+| **Harness wiring** | three hook configs plus `templates/opencode/plugins/guardrails.js` | payload | G7; G13 interpreter parity for hook configs | inspect generated files after install |
 | **Agent contract payload** | `templates/common/{AGENTS,CLAUDE,GEMINI}.md` | payload | Copied verbatim, language-agnostic, English | read-through |
 | **Install-time docs** | `templates/common/{README,POST_INSTALL,SELF_TEST_PROMPT}.md` | payload | Must match the commands the installer actually prints | cross-check against `install.js` summary |
 | **Engine test suite** | `templates/common/test_policy_engine.*` | payload | Every engine rule needs a case; G14 behavior parity | runs only *after* installing into a target |
@@ -87,8 +87,9 @@ is JavaScript, and the distinction that matters is kit-side vs payload, not
 language.
 
 The payload is `templates/common/{policy_engine,policy_loader,final_check,test_policy_engine}.js`
-plus `vendor/js-yaml.js`, and the three `pretooluse.js` adapters. All three hook
-configs invoke `node`. Nothing in the payload needs pip, a virtualenv, or pytest.
+plus `vendor/js-yaml.js`, the three `pretooluse.js` adapters, and the OpenCode
+plugin. The three hook configs invoke `node`; OpenCode loads its local plugin.
+Nothing in the payload needs pip, a virtualenv, or pytest.
 
 Snake_case filenames were kept deliberately so `git log --follow` and greps stay
 continuous across the port, even though the rest of the kit's JS uses flat
@@ -226,7 +227,7 @@ Cited by ID in specs, tasks, and hard stops.
 | **G4** | **Never overwrite.** The installer writes a `.new` sibling instead of clobbering an existing file. Re-running the installer on a configured project must stay safe. | installer |
 | **G5** | **Docs sync.** `RULES.md` is generated. Change core rules → run `node docs.js` and commit the result. CI diffs it and fails on drift. Never hand-edit `RULES.md`. | `generate.js`, `docs.js`, engine |
 | **G6** | **Stack parity.** A new or changed stack needs its `ci` (GitHub) **and** `gitlabCi` (Docker image) profile **and** a `STACK_MARKERS` fixture in `test/install.test.js`. Missing `gitlabCi` silently emits a broken GitLab pipeline. | `stacks.js` |
-| **G7** | **Harness parity.** An engine signature or contract change must be applied to all three adapters *and* all three hook configs. Two-out-of-three is a silent breakage for the third harness's users. | payload |
+| **G7** | **Harness parity.** An engine signature or contract change must reach every supported integration and its wiring (currently three hook adapters/configs plus the OpenCode plugin). Partial updates silently break that harness's enforcement. | payload |
 | **G8** | **Self-protection is a deny, and it covers reads separately.** Writing or deleting `.agent-security/**`, any harness hook config, `.husky/**`, `.github/workflows/**`, or any `KNOWN_IGNORE_FILES` entry returns **`deny`** — for structured file calls, for shell commands that would modify them (`rm`, `mv`, `>`, `sed -i`, `chmod`, ...), and for any unrecognized tool name. `ask` was wrong here: it put the most consequential decision in the system behind the click a distracted human makes fastest, and the prize for that click is every guardrail off. The sanctioned path is a human editing the file or `toggle.js --disable` first — deliberate, and visible in `git diff`. **Reading** these files is `allow` (see `READ_ONLY_TOOLS`): reading disables nothing, and prompting on reads only trains the human to approve `.agent-security/**` reflexively — it also made `SELF_TEST_PROMPT.md` unrunnable. A shell command that merely names the directory stays `ask`, because the tokenizer cannot prove it is read-only. | engine |
 | **G9** | **Ignore files only add.** `!negation` lines in `.cursorignore`/`.aiignore`/etc. are deliberately never honored. A repo's ignore file may only *add* protection, never remove it. This is intentional, not a bug — do not "fix" it. | engine |
 | **G10** | **Cross-platform.** Kit-side JS must work on Windows, macOS, and Linux. `npm test` runs on Windows. No bash-only assumptions, no hardcoded `/tmp`, no POSIX-only path handling. | installer, tests |
@@ -262,8 +263,8 @@ Cited by ID in specs, tasks, and hard stops.
   `python`. Note the trap: the `python` **stack** describes a target project
   written in Python and is unrelated to the engine's own runtime. A spec that
   says "Python" must say which one it means.
-- **Supported harnesses** are exactly `claude-code`, `vscode-codex`,
-  `antigravity`.
+- **Supported harnesses** are `claude-code`, `vscode-codex`, `antigravity`,
+  and `opencode`.
 - **There are no installs of this kit in the wild yet** (as of 2026-08-26).
   Every "what about existing installs?" concern is therefore **forward-looking,
   not a migration problem**. G4 still holds — the installer must never
@@ -403,7 +404,7 @@ General checklist:
   population of zero — see Repo-Specific Facts.
 - `RULES.md` regeneration is planned if core rules changed (G5).
 - New/changed stack covers `ci` + `gitlabCi` + `STACK_MARKERS` (G6).
-- All three adapters and all three hook configs are covered (G7, G13).
+- Every supported integration and its wiring are covered (G7, G13).
 - Self-protection still holds — the change cannot open a path for an agent to
   disable its own guardrails (G8).
 - Ignore-file negation is still not honored (G9).
@@ -480,7 +481,7 @@ Hard stops — stop and ask:
 - **Making the installer overwrite an existing file** (G4).
 - **Hand-editing `RULES.md`** instead of running `node docs.js` (G5).
 - **Adding a stack without `gitlabCi`** or without a `STACK_MARKERS` fixture (G6).
-- **Changing the engine contract without updating all three adapters and all
+- **Changing the engine contract without updating every supported integration
   three hook configs** (G7).
 - **Weakening self-protection** — any change that lets an agent edit
   `.agent-security/**`, a hook config, `.husky/**`, `.github/workflows/**`, or an

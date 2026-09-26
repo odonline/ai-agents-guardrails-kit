@@ -91,6 +91,7 @@ Object.keys(STACK_MARKERS).forEach((stack) => {
     writeFixtureFiles(dir, STACK_MARKERS[stack]());
     runInstall(dir, ["--agents", "claude-code", "--stacks", stack, "--git-hooks", "false", "--yes"]);
     assert(exists(dir, ".agent-security/policy_engine.js"), "missing policy_engine.js");
+    assert(exists(dir, ".agent-security/package.json"), "missing CommonJS module boundary");
     assert(exists(dir, ".agent-security/policy_loader.js"), "missing policy_loader.js");
     assert(exists(dir, ".agent-security/final_check.js"), "missing final_check.js");
     assert(exists(dir, ".agent-security/test_policy_engine.js"), "missing test_policy_engine.js");
@@ -429,7 +430,7 @@ function mkPayloadFixture(name, { policyYaml, withEngine = true } = {}) {
   fs.mkdirSync(path.join(sec, "vendor"), { recursive: true });
 
   const common = path.join(KIT_ROOT, "templates/common");
-  const files = ["policy_loader.js", "final_check.js"];
+  const files = ["package.json", "policy_loader.js", "final_check.js"];
   if (withEngine) files.push("policy_engine.js");
   for (const f of files) fs.copyFileSync(path.join(common, f), path.join(sec, f));
   fs.copyFileSync(
@@ -448,6 +449,9 @@ function mkPayloadFixture(name, { policyYaml, withEngine = true } = {}) {
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.copyFileSync(path.join(KIT_ROOT, ADAPTER_SOURCES[agent]), abs);
   }
+  const opencodePlugin = path.join(dir, ".opencode/plugins/guardrails.js");
+  fs.mkdirSync(path.dirname(opencodePlugin), { recursive: true });
+  fs.copyFileSync(path.join(KIT_ROOT, "templates/opencode/plugins/guardrails.js"), opencodePlugin);
   fs.writeFileSync(path.join(dir, "package.json"), "{}");
   return dir;
 }
@@ -534,6 +538,76 @@ test("each harness adapter denies when policy.yaml is unreadable", () => {
     const d = adapterDecision(agent, runAdapter(dir, agent, payloadFor(agent, { command: "npm test" })));
     assert(d.action === "deny", `${agent}: broken policy must deny, got ${d.action} (${d.reason})`);
   }
+});
+
+test("opencode installs its local guardrails plugin and preserves conflicts", () => {
+  const dir = mkTmp("opencode-install");
+  writeFixtureFiles(dir, STACK_MARKERS.node());
+  runInstall(dir, ["--agents", "opencode", "--stacks", "node", "--git-hooks", "false", "--yes"]);
+
+  const plugin = path.join(dir, ".opencode/plugins/guardrails.js");
+  assert(fs.existsSync(plugin), "missing OpenCode plugin");
+  assert(
+    fs.readFileSync(plugin, "utf8") ===
+      fs.readFileSync(path.join(KIT_ROOT, "templates/opencode/plugins/guardrails.js"), "utf8"),
+    "installed OpenCode plugin does not match the template"
+  );
+
+  fs.writeFileSync(plugin, "user edit\n");
+  runInstall(dir, ["--agents", "opencode", "--stacks", "node", "--git-hooks", "false", "--yes"]);
+  assert(fs.readFileSync(plugin, "utf8") === "user edit\n", "installer overwrote the user's plugin");
+  assert(fs.existsSync(`${plugin}.new`), "conflicting plugin should be written as .new");
+});
+
+test("opencode plugin enforces protected reads, recursive grep, shell, and writes", () => {
+  const dir = mkPayloadFixture("opencode-plugin", {
+    policyYaml:
+      'protected_paths:\n  - "**/config.php"\n' +
+      "blocked_commands:\n  - pattern: 'git push'\n    action: ask\n    reason: 'Push requires approval.'\n",
+  });
+  const secret = path.join(dir, "src/Includes/config/dev/config.php");
+  fs.mkdirSync(path.dirname(secret), { recursive: true });
+  fs.writeFileSync(secret, "<?php\n$DATABASE_DB = 'private';\n");
+  fs.writeFileSync(path.join(dir, "package.json"), '{"type":"module"}\n');
+
+  const plugin = path.join(dir, ".opencode/plugins/guardrails.js");
+  const script = [
+    'import { pathToFileURL } from "node:url";',
+    'const { Guardrails } = await import(pathToFileURL(process.argv[1]).href);',
+    'const hooks = await Guardrails({ directory: process.argv[2] });',
+    'try {',
+    '  await hooks["tool.execute.before"]({ tool: process.argv[3] }, { args: JSON.parse(process.argv[4]) });',
+    '  process.stdout.write("allow");',
+    '} catch (error) { process.stdout.write(`deny:${error.message}`); }',
+  ].join("\n");
+  const invoke = (tool, args) => execFileSync(
+    "node",
+    ["--input-type=module", "-e", script, plugin, dir, tool, JSON.stringify(args)],
+    { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+  );
+
+  for (const [tool, args] of [
+    ["read", { filePath: "src/Includes/config/dev/config.php" }],
+    ["grep", { pattern: "DATABASE_DB" }],
+    ["bash", { command: "grep DATABASE_DB src/Includes/config/dev/config.php" }],
+    ["bash", { command: "git push origin main" }],
+    ["write", { filePath: "src/Includes/config/dev/config.php", content: "changed" }],
+  ]) {
+    const result = invoke(tool, args);
+    assert(result.startsWith("deny:"), `${tool} should block the call, got ${result}`);
+  }
+  assert(invoke("grep", { pattern: "DATABASE_DB", include: "*.js" }) === "allow",
+    "grep restricted to JavaScript files should not be blocked by a PHP config");
+  assert(invoke("grep", { pattern: "DATABASE_DB", include: "*.{js,ts}" }) === "allow",
+    "brace-expanded JavaScript/TypeScript include should not match a PHP config");
+  assert(invoke("read", {}).startsWith("deny:"), "read without filePath must fail closed");
+  assert(invoke("write", {}).startsWith("deny:"), "write without filePath must fail closed");
+
+  const engine = path.join(dir, ".agent-security/policy_engine.js");
+  fs.renameSync(engine, `${engine}.missing`);
+  assert(invoke("read", { filePath: "package.json" }).startsWith("deny:"),
+    "OpenCode plugin must block tools when the shared engine is missing");
+  fs.renameSync(`${engine}.missing`, engine);
 });
 
 test("antigravity adapter always asks for scheduling/subagent tools", () => {
@@ -1373,6 +1447,7 @@ const HARNESS_WIRING = [
   { agent: "claude-code", config: ".claude/settings.json", adapter: ".claude/hooks/pretooluse.js" },
   { agent: "vscode-codex", config: ".github/hooks/security.json", adapter: ".github/hooks/pretooluse.js" },
   { agent: "antigravity", config: ".agents/hooks.json", adapter: ".agents/scripts/pretooluse.js" },
+  { agent: "opencode", config: ".opencode/plugins/guardrails.js", adapter: ".opencode/plugins/guardrails.js" },
 ];
 
 HARNESS_WIRING.forEach(({ agent, config, adapter }) => {
@@ -1389,7 +1464,9 @@ HARNESS_WIRING.forEach(({ agent, config, adapter }) => {
     assert(off.code === 0, `disable should exit 0, got ${off.code}:\n${off.out}`);
     assert(!fs.existsSync(live), `${config} should have been renamed away`);
     assert(fs.existsSync(parked), `expected ${config}.disabled`);
-    assert(exists(dir, adapter), "disabling must not delete the adapter — that is uninstall's job");
+    if (agent !== "opencode") {
+      assert(exists(dir, adapter), "disabling must not delete the adapter — that is uninstall's job");
+    }
     assert(exists(dir, ".agent-security/policy.yaml"), "disabling must not delete the policy");
     assert(exists(dir, ".agent-security/policy_engine.js"), "disabling must not delete the engine");
 
@@ -1410,7 +1487,7 @@ test("with every harness disabled, no hook config references the engine", () => 
   writeFixtureFiles(dir, STACK_MARKERS.node());
   runInstall(dir, [
     "--agents",
-    "claude-code,vscode-codex,antigravity",
+    "claude-code,vscode-codex,antigravity,opencode",
     "--stacks",
     "node",
     "--git-hooks",

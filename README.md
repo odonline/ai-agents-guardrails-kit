@@ -1,7 +1,7 @@
 # ai-agents-guardrails-kit
 
 Instalador de guardrails para agentes de código (Claude Code, VS Code/Codex,
-Antigravity): un motor de políticas único, auditado, con detección
+Antigravity, OpenCode): un motor de políticas único, auditado, con detección
 automática del stack del proyecto (Node, PHP, Java, Python...).
 
 ## Quickstart
@@ -116,6 +116,7 @@ clone (`https://github.com/...` vs `https://gitlab.com/...` vs
 
 .claude/ | .github/hooks/ | .agents/   # adapter fino por harness — solo
                                         # traducen el JSON de cada uno
+.opencode/plugins/guardrails.js         # plugin local que consulta el mismo motor
 .husky/pre-commit, .husky/pre-push     # generados según el stack —
                                         # core.hooksPath se configura solo
                                         # si el directorio ya es un repo git
@@ -282,7 +283,11 @@ nunca queda desactualizado respecto a lo que el instalador realmente hace
 ## Agentes soportados
 
 Claude Code, VS Code + Codex (o cualquier agente compatible con
-Copilot-style hooks), Antigravity.
+Copilot-style hooks), Antigravity y OpenCode.
+
+OpenCode se integra mediante un plugin local en `.opencode/plugins/` y usa el
+mismo motor. Las decisiones `ask` del motor bloquean la llamada en OpenCode:
+el hook previo a la ejecución no puede abrir su diálogo nativo de aprobación.
 
 ## Arquitectura
 

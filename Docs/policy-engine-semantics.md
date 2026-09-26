@@ -1,7 +1,7 @@
 # Policy engine semantics
 
 `templates/common/policy_engine.js` exposes one entrypoint, `evaluate()`,
-called by every per-harness adapter. This document is about what happens
+called by every per-harness integration. This document is about what happens
 *inside* that function, and the design reasoning behind each layer — the
 "why," not just the rule table (that's `RULES.md`, generated and always
 current).
@@ -11,17 +11,19 @@ current).
 `evaluate()` checks things in a fixed order, and stops at the first
 decision that isn't `allow`:
 
-1. **Structured file tool calls** (`Write`/`Edit`/etc. carrying a
+1. **Recursive content-search scopes** — inspect reachable files against
+  protected-path rules before the harness searches them.
+2. **Structured file tool calls** (`Write`/`Edit`/etc. carrying a
    `file_path`) — resolve the path (symlinks, `~`, relative-to-workspace),
    deny if it escapes the workspace root or matches `protected_paths`.
-2. **Shell commands** — match against `blocked_commands` regexes first,
+3. **Shell commands** — match against `blocked_commands` regexes first,
    then tokenize the command (best-effort, not a real shell parser) and
    check every path-like token against the same `protected_paths`.
-3. **Guardrail self-protection** — editing/deleting `.agent-security/**`,
+4. **Guardrail self-protection** — editing/deleting `.agent-security/**`,
    any harness's hook config, or any known ignore file always returns
    `deny`, checked for both structured calls and shell commands, so an
    agent can never disable its own guardrails mid-session.
-4. **Default: `allow`.**
+5. **Default: `allow`.**
 
 ## `deny` is enforced; `ask` is delegated
 
