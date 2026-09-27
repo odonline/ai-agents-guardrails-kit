@@ -589,9 +589,12 @@ test("opencode plugin enforces protected reads, recursive grep, shell, and write
   for (const [tool, args] of [
     ["read", { filePath: "src/Includes/config/dev/config.php" }],
     ["grep", { pattern: "DATABASE_DB" }],
+    ["glob", { pattern: "**/config.php" }],
     ["bash", { command: "grep DATABASE_DB src/Includes/config/dev/config.php" }],
     ["bash", { command: "git push origin main" }],
     ["write", { filePath: "src/Includes/config/dev/config.php", content: "changed" }],
+    ["apply_patch", { patchText: "*** Begin Patch\n*** Update File: src/Includes/config/dev/config.php\n*** End Patch" }],
+    ["apply_patch", { patchText: "*** Begin Patch\n*** Delete File: src/Includes/config/dev/config.php\n*** End Patch" }],
   ]) {
     const result = invoke(tool, args);
     assert(result.startsWith("deny:"), `${tool} should block the call, got ${result}`);
@@ -600,6 +603,11 @@ test("opencode plugin enforces protected reads, recursive grep, shell, and write
     "grep restricted to JavaScript files should not be blocked by a PHP config");
   assert(invoke("grep", { pattern: "DATABASE_DB", include: "*.{js,ts}" }) === "allow",
     "brace-expanded JavaScript/TypeScript include should not match a PHP config");
+  assert(invoke("glob", { pattern: "**/*.{js,ts}" }) === "allow",
+    "glob restricted to JavaScript/TypeScript files should not match a PHP config");
+  assert(invoke("apply_patch", {
+    patchText: "*** Begin Patch\n*** Add File: src/new-file.js\n+ok\n*** End Patch",
+  }) === "allow", "patches to ordinary files should be allowed");
   assert(invoke("read", {}).startsWith("deny:"), "read without filePath must fail closed");
   assert(invoke("write", {}).startsWith("deny:"), "write without filePath must fail closed");
 

@@ -36,6 +36,11 @@ export const Guardrails = async ({ directory }) => {
             search_scope: { path: args.path || ".", include: args.include },
           });
           return;
+        case "glob":
+          enforce("Glob", {
+            search_scope: { path: args.path || ".", include: args.pattern },
+          });
+          return;
         case "bash":
           if (typeof args.command !== "string" || !args.command) {
             throw new Error("[guardrails] OpenCode bash omitted command; blocking the call.");
@@ -55,7 +60,9 @@ export const Guardrails = async ({ directory }) => {
           enforce("Edit", { filePath: args.filePath });
           return;
         case "apply_patch": {
-          const paths = [...String(args.patchText || "").matchAll(/^\*\*\* (?:Add|Update|Delete|Move to):\s*(.+?)\s*$/gm)]
+          const paths = [...String(args.patchText || "").matchAll(
+            /^\*\*\* (?:(?:Add|Update|Delete) File:|Move to:)\s*(.+?)\s*$/gm
+          )]
             .map((match) => match[1]);
           if (paths.length === 0) {
             throw new Error("[guardrails] Could not identify patch paths; blocking the patch.");
