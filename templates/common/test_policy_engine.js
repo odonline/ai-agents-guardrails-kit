@@ -432,6 +432,50 @@ engineCase("shell_exfiltrate_env_denied", "deny", "Bash",
 engineCase("shell_ordinary_command_allowed", "allow", "Bash", { command: "npm test" }, WORKSPACE);
 engineCase("shell_cat_ordinary_file_allowed", "allow", "Bash", { command: "cat package.json" }, WORKSPACE);
 
+test("opencode_grep_denies_matching_protected_file", () => {
+  if (!engine) return pend("opencode_grep_denies_matching_protected_file");
+  const workspace = mkWorkspace({ "src/Includes/config/dev/config.php": "<?php" });
+  const policy = loadPolicy(writePolicy('protected_paths:\n  - "**/config.php"\n'));
+  const decision = engine.evaluate("grep", {
+    search_scope: { path: ".", include: "*.php" },
+  }, workspace, policy);
+  assertEqual(decision.action, "deny");
+});
+
+test("opencode_grep_allows_when_include_excludes_protected_file", () => {
+  if (!engine) return pend("opencode_grep_allows_when_include_excludes_protected_file");
+  const workspace = mkWorkspace({ "src/Includes/config/dev/config.php": "<?php" });
+  const policy = loadPolicy(writePolicy('protected_paths:\n  - "**/config.php"\n'));
+  const decision = engine.evaluate("grep", {
+    search_scope: { path: ".", include: "*.js" },
+  }, workspace, policy);
+  assertEqual(decision.action, "allow");
+});
+
+test("opencode_grep_allows_brace_include_that_excludes_protected_file", () => {
+  if (!engine) return pend("opencode_grep_allows_brace_include_that_excludes_protected_file");
+  const workspace = mkWorkspace({ "src/Includes/config/dev/config.php": "<?php" });
+  const policy = loadPolicy(writePolicy('protected_paths:\n  - "**/config.php"\n'));
+  const decision = engine.evaluate("grep", {
+    search_scope: { path: ".", include: "*.{js,ts}" },
+  }, workspace, policy);
+  assertEqual(decision.action, "allow");
+});
+
+test("opencode_grep_allows_root_search_when_only_hidden_file_is_protected", () => {
+  if (!engine) return pend("opencode_grep_allows_root_search_when_only_hidden_file_is_protected");
+  const workspace = mkWorkspace({ ".env": "secret", "src/index.js": "const ready = true;" });
+  const policy = loadPolicy(writePolicy('protected_paths:\n  - ".env"\n'));
+  const rootSearch = engine.evaluate("grep", {
+    search_scope: { path: "." },
+  }, workspace, policy);
+  const explicitRead = engine.evaluate("grep", {
+    search_scope: { path: ".env" },
+  }, workspace, policy);
+  assertEqual(rootSearch.action, "allow");
+  assertEqual(explicitRead.action, "deny");
+});
+
 // --- live agent-ignore files ---
 if (!engine) {
   [
@@ -505,6 +549,8 @@ engineCase("engine_source_write_denies", "deny", "Write",
   { file_path: ".agent-security/policy_engine.js" }, WORKSPACE);
 engineCase("husky_hook_write_denies", "deny", "Write",
   { file_path: ".husky/pre-commit" }, WORKSPACE);
+engineCase("opencode_plugin_write_denies", "deny", "Write",
+  { file_path: ".opencode/plugins/guardrails.js" }, WORKSPACE);
 engineCase("ci_workflow_write_denies", "deny", "Write",
   { file_path: ".github/workflows/security.yml" }, WORKSPACE);
 

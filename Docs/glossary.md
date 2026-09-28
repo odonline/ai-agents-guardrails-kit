@@ -99,12 +99,12 @@ themselves (`git config core.hooksPath .husky`).
 ## Harness / adapter
 
 A **harness** is the agent tool itself (Claude Code, VS Code + Codex,
-Antigravity). An **adapter** (`templates/<agent>/hooks/pretooluse.js` or
-equivalent) is the thin translation layer between that harness's
-hook-invocation JSON format and the engine's `evaluate()` call. Adapters
-contain *zero* decision logic — they only translate in and out. All actual
-policy logic lives in exactly one place, `policy_engine.js`, so there is
-exactly one module to audit for security-relevant behavior.
+Antigravity, OpenCode). An **integration** is the thin translation layer
+between that harness's tool-call format and the engine's `evaluate()` call.
+Hook-based harnesses use adapters; OpenCode uses a local plugin. Integrations
+contain *zero* policy decision logic — they only translate in and out. All
+actual policy logic lives in exactly one place, `policy_engine.js`, so there
+is exactly one module to audit for security-relevant behavior.
 
 ## Stack
 

@@ -9,7 +9,7 @@ and where* each piece runs, not what language it's written in:
   once, on the developer's own machine, to scaffold a target project.
   Zero dependencies (stdlib only).
 - **Payload** — `templates/common/policy_engine.js`, `policy_loader.js`,
-  `final_check.js`, plus the per-harness adapters. Copied into the target
+  `final_check.js`, the per-harness adapters, and the OpenCode plugin. Copied into the target
   project and run there, on every agent tool call, for the life of that
   project. Never varies by target-project language — only the data in the
   generated `policy.yaml` does. Its one third-party dependency, `js-yaml`,
@@ -37,7 +37,7 @@ Three kit-side modules, in a strict dependency order: `stacks.js` →
   `RULES.md` from silently drifting out of sync with actual behavior.
 - **`install.js`** — the interactive CLI. Copies the common payload files
   (policy engine + the `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` operating
-  contract) plus per-agent adapter files, then writes the files rendered by
+  contract) plus per-agent integration files, then writes the files rendered by
   `generate.js`. Never overwrites an existing file — writes a `.new` sibling
   instead — so re-running the installer against an already-configured
   project stays safe (G4).
@@ -70,8 +70,8 @@ particular install did.
 ## The policy engine
 
 `templates/common/policy_engine.js` exposes one entrypoint, `evaluate()`,
-called by every per-harness adapter. Adapters only translate
-harness-specific JSON in and out; all decision logic lives in this one
+called by every per-harness integration. Integrations only translate
+harness-specific tool inputs and decisions; all policy logic lives in this one
 module, so there is exactly one place to audit (G3). It never varies by
 target-project language — only the data in `policy.yaml` does.
 
@@ -88,7 +88,7 @@ full evaluation order and the reasoning behind it.
 | Docs generator | `docs.js` → `RULES.md` | kit | parses the engine source directly; breaks loudly if the engine is renamed |
 | Runtime policy engine | `templates/common/policy_engine.js` | payload | fails closed (G2), one audit point (G3), self-protection (G8), no ignore-file negation (G9) |
 | Completion gate | `templates/common/final_check.js` | payload | re-executes `required_checks`; never trusts the agent's own claim |
-| Harness adapters | `templates/<agent>/hooks/pretooluse.js` | payload | translation only, zero decision logic (G3); all three must stay in sync (G7) |
+| Harness integrations | `templates/<agent>/...` | payload | translation only, zero policy decisions (G3); every supported integration stays in sync (G7) |
 | Harness hook configs | `templates/<agent>/settings.json` (or equivalent) | payload | interpreter in the command string must match the engine's actual runtime (G13) |
 | Agent contract payload | `templates/common/{AGENTS,CLAUDE,GEMINI}.md` | payload | copied verbatim, English, language-agnostic |
 | Vendored dependency | `templates/common/vendor/js-yaml.js` | payload | the one authorized dependency (G1); never resolved from a target's `node_modules` |
@@ -99,10 +99,10 @@ full evaluation order and the reasoning behind it.
 
 - **New stack/language** → one entry in `stacks.js`, plus its marker
   fixture in `test/install.test.js`'s `STACK_MARKERS` (G6).
-- **New agent/harness** → a new `templates/<agent>/` adapter translating
-  that harness's JSON to/from the engine, plus an entry in `install.js`'s
-  `AGENTS` map. Harness-specific parsing never goes inside
-  `policy_engine.js` (G3).
+- **New agent/harness** → a translation-only integration under
+  `templates/<agent>/` plus an entry in `install.js`'s `AGENTS` map. OpenCode
+  uses a local plugin; hook-based harnesses use adapters. Harness-specific
+  parsing never goes inside `policy_engine.js` (G3).
 - **Changing core (language-agnostic) rules** → edit
   `CORE_BLOCKED_COMMANDS`/`CORE_PROTECTED_PATHS` in `generate.js`, then run
   `node docs.js` to regenerate `RULES.md` (G5; CI fails if this is skipped).

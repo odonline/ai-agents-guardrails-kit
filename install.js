@@ -45,11 +45,18 @@ const AGENTS = {
       { src: "antigravity/scripts/pretooluse.js", dest: ".agents/scripts/pretooluse.js" },
     ],
   },
+  opencode: {
+    label: "OpenCode",
+    files: [
+      { src: "opencode/plugins/guardrails.js", dest: ".opencode/plugins/guardrails.js" },
+    ],
+  },
 };
 
 // These are language-agnostic — they operate on shell/git/path semantics,
 // not on the project's source language — so they're copied verbatim.
 const COMMON_FILES = [
+  { src: "common/package.json", dest: ".agent-security/package.json" },
   { src: "common/policy_engine.js", dest: ".agent-security/policy_engine.js" },
   { src: "common/policy_loader.js", dest: ".agent-security/policy_loader.js" },
   { src: "common/final_check.js", dest: ".agent-security/final_check.js" },
@@ -807,7 +814,7 @@ async function main() {
     console.log(`
 install-guardrails
 
-  --agents claude-code,vscode-codex,antigravity   Salta el prompt de agentes
+  --agents claude-code,vscode-codex,antigravity,opencode   Salta el prompt de agentes
   --stacks node,php,java-maven,java-gradle,python  Salta la detección de stack ("none" = ninguno)
   --target <dir>                                  Directorio del proyecto (default: cwd)
   --git-hooks / --git-hooks false                  Instalar hooks de Husky + workflow de CI

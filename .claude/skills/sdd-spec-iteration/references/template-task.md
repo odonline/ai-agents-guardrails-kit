@@ -55,7 +55,7 @@ Policy semantics contract:
 - Self-protection unaffected (G8); negation still not honored (G9)
 
 Interpreter/runtime contract:
-- Required runtime; which of the three hook configs change (G13)
+- Required runtime; which hook configs or plugins change (G13)
 
 Docs sync contract:
 - `RULES.md` regenerated via `node docs.js`: yes/no
@@ -63,7 +63,7 @@ Docs sync contract:
 
 Parity contract:
 - Stacks: `ci` + `gitlabCi` + `STACK_MARKERS` (G6)
-- Harnesses: three adapters + three hook configs (G7)
+- Harnesses: every supported integration + its wiring (G7)
 - CI: both builders (G11)
 
 Cross-platform contract:
@@ -135,7 +135,7 @@ Repeat the install + engine suite for every stack and harness this task touches.
 ## Non-Breakage Criteria
 - `.new` behavior preserved (G4).
 - All five stacks still install cleanly.
-- All three harnesses still get a working hook wiring (G7, G13).
+- All supported harnesses still get working enforcement wiring (G7, G13).
 - `npm test` still passes on Windows (G10).
 - No dependency beyond the authorized vendored `js-yaml` (G1).
 - Guardrail self-protection still returns `ask` (G8).

@@ -86,7 +86,7 @@ loud — never silently allow, never silently skip.
 
 ### Parity Contract
 - Stacks: `ci` + `gitlabCi` + `STACK_MARKERS` (G6)
-- Harnesses: all three adapters + all three hook configs (G7)
+- Harnesses: every supported integration + its wiring (G7)
 - CI: both `buildCiWorkflow` and `buildGitlabCiYaml` (G11)
 - Tests: no case dropped (G14)
 
@@ -121,7 +121,7 @@ Cite by G-series ID. At minimum:
 - Do NOT overwrite an existing file in a target project (G4).
 - Do NOT hand-edit `RULES.md` (G5).
 - Do NOT add a stack without `gitlabCi` + `STACK_MARKERS` (G6).
-- Do NOT change the engine contract for fewer than all three harnesses (G7, G13).
+- Do NOT change the engine contract for fewer than all supported harnesses (G7, G13).
 - Do NOT weaken guardrail self-protection (G8).
 - Do NOT honor `!negation` lines (G9).
 - Do NOT break Windows (G10).

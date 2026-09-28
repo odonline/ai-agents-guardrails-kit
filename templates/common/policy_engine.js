@@ -1,20 +1,20 @@
 /**
  * policy_engine.js — the one place a tool call becomes a decision.
  *
- * Every per-harness adapter (.claude/hooks/pretooluse.js,
- * .github/hooks/pretooluse.js, .agents/scripts/pretooluse.js) translates its
- * harness's JSON and calls evaluate(). All decision logic lives here, so there
- * is exactly one place to audit. Adapters must never make a policy decision,
- * and this file must never learn a harness's JSON shape.
+ * Every harness integration translates its tool calls and calls evaluate().
+ * All policy decisions live here, so there is exactly one place to audit.
+ * Integrations must never make a policy decision, and this file must never
+ * learn a harness's JSON shape.
  *
  * Evaluation order — this order is the contract, not an implementation detail:
- *   1. Structured file-tool calls: resolve the path, deny if it escapes the
+ *   1. Recursive search scopes: inspect reachable files for protected paths.
+ *   2. Structured file-tool calls: resolve the path, deny if it escapes the
  *      workspace or matches a protected pattern.
- *   2. Shell commands: blocked_commands regexes first, then every path-looking
+ *   3. Shell commands: blocked_commands regexes first, then every path-looking
  *      token against protected paths, then against guardrail infrastructure.
- *   3. Guardrail self-protection for structured calls: writes and deletes are
+ *   4. Guardrail self-protection for structured calls: writes and deletes are
  *      denied, reads are allowed.
- *   4. Default: allow.
+ *   5. Default: allow.
  *
  * Two things this deliberately does NOT do:
  *   - Honor `!negation` lines in agent-ignore files. A repo's own ignore file
@@ -59,6 +59,7 @@ const KNOWN_IGNORE_FILES = [
 // session they bind. Reading them is allowed — see READ_ONLY_TOOLS.
 const GUARDRAIL_INFRA_PATTERNS = [
   ".agent-security/**",
+  ".opencode/plugins/**",
   ".claude/settings*.json",
   ".claude/hooks/**",
   ".agents/hooks.json",
@@ -92,6 +93,7 @@ const GUARDRAIL_INFRA_PATTERNS = [
  */
 const INFRA_ASK_ON_MENTION = [
   ".agent-security/**",
+  ".opencode/plugins/**",
   ".claude/settings*.json",
   ".claude/hooks/**",
   ".agents/hooks.json",
@@ -217,6 +219,8 @@ const READ_ONLY_TOOLS = new Set([
   "read_file", "list_dir", "grep_search", "file_search", "semantic_search",
   // antigravity
   "view_file", "view_code_item", "codebase_search", "list_directory",
+  // opencode
+  "read", "grep", "glob",
 ]);
 
 const SHELL_TOOLS = new Set([
@@ -517,6 +521,75 @@ function matchAnyProtected(resolved, workspaceRoot, policyPatterns) {
   return null;
 }
 
+function expandGlobAlternatives(pattern) {
+  const match = /\{([^{}]*)\}/.exec(pattern);
+  if (!match || !match[1].includes(",")) return [pattern];
+  return match[1].split(",").flatMap((alternative) =>
+    expandGlobAlternatives(pattern.slice(0, match.index) + alternative + pattern.slice(match.index + match[0].length))
+  );
+}
+
+function searchScopeTouchesProtected(scopePath, include, workspaceRoot, policyPatterns) {
+  const scope = resolvePath(String(scopePath || "."), workspaceRoot);
+  if (scope === null) return { error: "Search path could not be resolved safely." };
+  if (pathEscapesWorkspace(scope, workspaceRoot)) {
+    return { error: `Search path '${scopePath}' resolves outside the workspace root.` };
+  }
+
+  let stat;
+  try {
+    stat = fs.statSync(scope);
+  } catch (e) {
+    return { error: `Search path '${scopePath}' could not be inspected safely.` };
+  }
+
+  const includes = typeof include === "string" && include ? expandGlobAlternatives(include) : null;
+  const includeCanMatch = (filePath) => {
+    if (!includes) return true;
+    if (includes.some((pattern) => pattern.startsWith("!"))) return true;
+    const relative = toPosix(path.relative(scope, filePath));
+    return includes.some((pattern) =>
+      fnmatch(relative, toPosix(pattern)) || fnmatch(path.basename(filePath), toPosix(pattern))
+    );
+  };
+
+  const checkFile = (filePath) => {
+    if (!includeCanMatch(filePath)) return null;
+    const matched = matchAnyProtected(filePath, workspaceRoot, policyPatterns);
+    return matched ? { matched, resolved: toPosix(filePath) } : null;
+  };
+
+  if (!stat.isDirectory()) return checkFile(scope);
+
+  const pending = [scope];
+  let inspected = 0;
+  while (pending.length) {
+    const dir = pending.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      return { error: `Search directory '${toPosix(dir)}' could not be inspected safely.` };
+    }
+    for (const entry of entries) {
+      const candidate = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!entry.name.startsWith(".")) pending.push(candidate);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (entry.name.startsWith(".")) continue;
+      inspected++;
+      if (inspected > 100000) {
+        return { error: "Search scope is too large to inspect safely." };
+      }
+      const hit = checkFile(candidate);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
 // ── commands ─────────────────────────────────────────────────────────────
 
 /**
@@ -696,6 +769,28 @@ function evaluate(toolName, toolInput, workspaceRoot, policy, context) {
     return decision;
   };
 
+  // --- 0. recursive content-search scopes ---
+  // Harness adapters may translate a recursive search into this neutral shape.
+  // The engine, not the adapter, decides whether any reachable file is protected.
+  if (input.search_scope && typeof input.search_scope === "object") {
+    const hit = searchScopeTouchesProtected(
+      input.search_scope.path,
+      input.search_scope.include,
+      root,
+      pol.protected_paths || []
+    );
+    if (hit && hit.error) {
+      return finish(new Decision("deny", hit.error, { toolName }));
+    }
+    if (hit) {
+      return finish(new Decision(
+        "deny",
+        `Search may read a path matching protected pattern from ${hit.matched}.`,
+        { matchedRule: hit.matched, toolName, details: { resolved_path: hit.resolved } }
+      ));
+    }
+  }
+
   // --- 1. structured file-tool calls ---
   const hasPathKey =
     FILE_TOOLS.has(toolName) || "path" in input || "file_path" in input || "filePath" in input;
@@ -850,6 +945,8 @@ module.exports = {
     matchProtectedPath,
     matchAnyProtected,
     commandTouches,
+    searchScopeTouchesProtected,
+    expandGlobAlternatives,
     _gitignoreLineToPattern,
     timestamp,
   },

@@ -66,7 +66,7 @@ Stop and ask if implementation would require:
 - The installer overwriting an existing file (G4).
 - Hand-editing `RULES.md` (G5).
 - A stack without `gitlabCi` or without a `STACK_MARKERS` fixture (G6).
-- An engine contract change reaching fewer than all three adapters and all three
+- An engine contract change reaching fewer than every supported integration and
   hook configs (G7, G13).
 - Weakening guardrail self-protection (G8).
 - Honoring `!negation` lines in ignore files (G9).

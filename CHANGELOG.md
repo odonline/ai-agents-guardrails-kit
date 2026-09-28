@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### OpenCode ahora puede instalar los guardrails
+
+`--agents opencode` instala un plugin local en `.opencode/plugins/` que evalúa
+lecturas, búsquedas recursivas, comandos de shell y escrituras con el motor
+compartido. Las búsquedas `grep` se bloquean si su alcance incluye un archivo
+protegido; los filtros `include` que excluyen esos archivos siguen permitiendo
+la búsqueda. El plugin queda protegido contra cambios de agentes y se puede
+desactivar/reactivar con `toggle.js`.
+
+OpenCode no permite que el hook previo a ejecutar una herramienta abra su
+diálogo nativo de aprobación. Por eso, las decisiones `ask` del motor se
+bloquean en vez de aprobarse silenciosamente. El motor también queda bajo un
+`package.json` CommonJS propio para que siga cargando en proyectos Node ESM.
+
 ### `npm test` fallaba en Linux y macOS: 3 casos "pendientes" que no eran deuda
 
 El primer run de GitHub Actions (que existe recién desde esta versión) falló con:

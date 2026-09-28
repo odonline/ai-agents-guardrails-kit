@@ -1,7 +1,7 @@
 # .agent-security
 
-Shared, audited policy engine used by every agent hook in this repo
-(Claude Code, VS Code/Codex, Antigravity), plus Git hooks and CI.
+Shared, audited policy engine used by every agent integration in this repo
+(Claude Code, VS Code/Codex, Antigravity, OpenCode), plus Git hooks and CI.
 
 > Just installed this and unsure what to do next? See
 > [`POST_INSTALL.md`](./POST_INSTALL.md) — this file explains how the
@@ -11,6 +11,8 @@ Shared, audited policy engine used by every agent hook in this repo
 
 ```
 .agent-security/
+├── package.json             # keeps these CommonJS engine files independent
+│                            # of the target project's module type
 ├── policy.yaml              # single source of truth for rules
 ├── policy_engine.js         # evaluate(toolName, toolInput) -> Decision
 ├── policy_loader.js         # reads + validates policy.yaml, fails closed
@@ -32,14 +34,22 @@ Shared, audited policy engine used by every agent hook in this repo
 
 ## How it's wired
 
-Each harness has a thin **adapter** that only knows how to parse that
-harness's JSON and print that harness's JSON back. All actual logic
-(protected paths, blocked commands, symlink/escape checks, default-deny)
-lives in `policy_engine.js` so there is exactly one place to audit and test.
+Each harness integration translates its tool calls into the shared engine's
+input contract. Hook-based integrations also translate the decision back to
+the harness; the OpenCode plugin blocks non-allow decisions before execution.
+All actual policy logic (protected paths, blocked commands, symlink/escape
+checks, default-deny) lives in `policy_engine.js` so there is exactly one place
+to audit and test.
 
 - Claude Code   → `.claude/hooks/pretooluse.js`
 - VS Code/Codex → `.github/hooks/pretooluse.js`
 - Antigravity   → `.agents/scripts/pretooluse.js`
+- OpenCode      → `.opencode/plugins/guardrails.js`
+
+The OpenCode plugin blocks protected reads, recursive searches that could
+include protected files, shell commands, and writes before they execute. Since
+OpenCode's pre-execution plugin hook cannot raise its native approval dialog,
+engine decisions of `ask` are blocked just like `deny`.
 
 Everything here runs on Node (>= 16). There is nothing to install: the one
 third-party dependency (js-yaml, for reading `policy.yaml`) ships vendored
@@ -244,6 +254,8 @@ Two things worth knowing:
   settings *and* ours. Renaming it would carry yours away, so it is left alone
   and reported — you take out the hook blocks yourself. For Antigravity,
   `"enabled": false` in `.agents/hooks.json` is enough.
+- OpenCode loads the plugin from `.opencode/plugins/guardrails.js`; disabling
+  renames that file to `.disabled` so OpenCode stops loading it.
 
 **Why a rename and not an `enabled: false` flag?** Because that flag would have
 to be read by the *engine* — a code path whose only job is to return `allow` for

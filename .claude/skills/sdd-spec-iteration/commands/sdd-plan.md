@@ -33,8 +33,9 @@ task list.
 - Any task that adds or changes a stack must carry `ci` + `gitlabCi` +
   `STACK_MARKERS` in the same task (G6) — splitting those three guarantees a
   broken intermediate state.
-- Any task that changes the engine contract must carry all three adapters and all
-  three hook configs, or explicitly sequence them with the incomplete state
+- Any task that changes the engine contract must carry every supported
+  integration and its wiring, or explicitly sequence them with the incomplete
+  state called out (G7, G13).
   called out (G7, G13).
 - Any task that changes core rules must include the `node docs.js` regeneration
   in the same task (G5) — CI fails otherwise.
